@@ -108,3 +108,43 @@ test('الرابط العام: الزائر يتصفح ويضيف للسلة ب�
   await other.goto('/driver');
   await expect(other.getByRole('heading', { name: 'دخول السائق' })).toBeVisible();
 });
+
+test('التحقق عبر واتساب الإدارة: العميل ينتظر، والإدارة تشوف الرمز وترسله', async ({ browser, request }) => {
+  const t = await adminToken(request);
+  const H = { headers: { Authorization: 'Bearer ' + t } };
+  await request.put('/api/admin/settings', { ...H, data: { verifyMode: 'whatsapp' } });
+  try {
+    const mk = async () => (await browser.newContext({ locale: 'ar-SA' })).newPage();
+    const [cust, adm] = await Promise.all([mk(), mk()]);
+    await adm.goto('/admin');
+    await adm.locator('#ad_pin').fill('1234');
+    await adm.getByRole('button', { name: 'دخول' }).click();
+    await expect(adm.getByRole('heading', { name: 'الطلبات' })).toBeVisible();
+
+    await cust.goto('/login');
+    await cust.locator('#au_phone').fill('0501110050');
+    await cust.getByRole('button', { name: 'إرسال الرمز' }).click();
+    await expect(cust.getByText('رمز التحقق على واتساب')).toBeVisible();
+    await expect(cust.getByRole('link', { name: /راسل الإدارة/ })).toHaveAttribute('href', /wa\.me\/966500112653/);
+
+    const row = adm.locator('.otprow', { hasText: '0501110050' });
+    await expect(row).toBeVisible({ timeout: 10000 }); // يظهر للإدارة فوراً
+    await expect(adm.locator('#toast')).toContainText('ينتظر رمز التحقق');
+    const code = (await row.locator('small b').textContent()).trim();
+    /* ما نفتح واتساب فعلاً في الاختبار: نعترض الرابط ونتأكد إنه لرقم العميل وفيه الرمز */
+    let waUrl = '';
+    await adm.context().route(/wa\.me/, (route) => { waUrl = route.request().url(); route.fulfill({ body: 'ok' }); });
+    const popup = adm.waitForEvent('popup');
+    await row.getByRole('button', { name: /إرسال بواتساب/ }).click();
+    await (await popup).waitForLoadState();
+    expect(waUrl).toContain('wa.me/966501110050');
+    expect(decodeURIComponent(waUrl)).toContain(code);
+    await expect(row).toContainText('✓ أُرسل', { timeout: 10000 });
+
+    await cust.locator('#au_name').fill('عميل واتساب');
+    await cust.locator('#au_code').fill(code);
+    await cust.locator('[data-act="authVerify"]').click();
+    await expect(cust.locator('.hero')).toBeVisible();
+    await expect(adm.locator('.otprow', { hasText: '0501110050' })).toHaveCount(0, { timeout: 10000 });
+  } finally { await request.put('/api/admin/settings', { ...H, data: { verifyMode: 'sms' } }); }
+});

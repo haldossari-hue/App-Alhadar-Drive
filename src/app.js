@@ -133,7 +133,18 @@ export async function buildApp(opts = {}) {
   /* صفحات السياسات (عامة بدون تسجيل دخول — تطلبها بوابات الدفع ونظام حماية البيانات) */
   app.get('/api/legal', async () => ({ ...legalTexts(), ...(({ legalName, crNumber, vatNumber, supportPhone }) => ({ legalName, crNumber, vatNumber, supportPhone }))(publicSettings()) }));
 
-  /* ============ حساب العميل: تحقق SMS ============ */
+  /* ============ حساب العميل: التحقق من الجوال ============ */
+  /* sms: رسالة نصية عبر المزوّد. whatsapp: الرمز يظهر للإدارة وترسله من واتسابها (حل مؤقت لين يتفعّل مزوّد الرسائل) */
+  const smsReady = () => !!opts.sendSms || config.sms.provider !== 'console';
+  function verifyMode() {
+    const m = db.settings().verifyMode;
+    if (m === 'whatsapp' || m === 'sms') return m === 'sms' && !smsReady() && config.isProd ? 'whatsapp' : m;
+    return !smsReady() && config.isProd ? 'whatsapp' : 'sms';
+  }
+  const otpPending = () => db.all(`SELECT o.phone, o.plain_code code, o.sent_at t, o.wa_sent_at waSentAt, c.name
+      FROM otp_codes o LEFT JOIN customers c ON c.phone = o.phone
+      WHERE o.channel = 'whatsapp' AND o.expires_at > ? ORDER BY o.sent_at DESC`, Date.now())
+    .map((r) => ({ ...r, exists: r.name != null }));
   app.post('/api/auth/otp', async (req) => {
     const phone = normalizePhone(req.body && req.body.phone);
     if (!phone) throw httpError(400, 'رقم الجوال غير صحيح');
@@ -144,10 +155,19 @@ export async function buildApp(opts = {}) {
     const inWindow = cur && now - cur.window_start < 3600e3;
     if (inWindow && cur.sent_count >= 5) throw httpError(429, 'طلبت رموز كثيرة، حاول بعد ساعة', 'rate');
     const code = randomDigits(4);
-    db.run(`INSERT INTO otp_codes(phone, code_hash, expires_at, attempts, sent_at, sent_count, window_start) VALUES(?,?,?,0,?,1,?)
+    const mode = verifyMode();
+    const wa = mode === 'whatsapp';
+    db.run(`INSERT INTO otp_codes(phone, code_hash, expires_at, attempts, sent_at, sent_count, window_start, channel, plain_code, wa_sent_at) VALUES(?,?,?,0,?,1,?,?,?,NULL)
       ON CONFLICT(phone) DO UPDATE SET code_hash=excluded.code_hash, expires_at=excluded.expires_at, attempts=0, sent_at=excluded.sent_at,
-        sent_count=?, window_start=?`,
-      phone, hashSecret(code), now + 5 * 60e3, now, now, inWindow ? cur.sent_count + 1 : 1, inWindow ? cur.window_start : now);
+        sent_count=?, window_start=?, channel=excluded.channel, plain_code=excluded.plain_code, wa_sent_at=NULL`,
+      phone, hashSecret(code), now + (wa ? 30 : 5) * 60e3, now, now, mode, wa ? code : null, inWindow ? cur.sent_count + 1 : 1, inWindow ? cur.window_start : now);
+    const exists = !!db.get('SELECT 1 FROM customers WHERE phone = ?', phone);
+    if (wa) {
+      hub.admins({ type: 'otp' });
+      hub.admins({ type: 'notify', text: `🔐 ${exists ? 'عميل' : 'عميل جديد'} ينتظر رمز التحقق: ${phone}`, sound: true });
+      push.admins({ title: '🔐 عميل ينتظر رمز التحقق', body: `${phone} — افتح لوحة الإدارة وأرسل له الرمز بواتساب`, url: '/admin', tag: 'otp-' + phone });
+      return { ok: true, exists, channel: 'whatsapp', supportPhone: db.settings().supportPhone || '', ...(config.otpDevEcho || opts.otpEcho ? { devCode: code } : {}) };
+    }
     try { await sms(phone, `رمز الدخول للهدار درايف: ${code}\nلا تشاركه مع أحد.`); }
     catch (e) {
       req.log.error(e);
@@ -156,8 +176,7 @@ export async function buildApp(opts = {}) {
       else db.run('DELETE FROM otp_codes WHERE phone = ?', phone);
       throw httpError(502, 'تعذر إرسال رسالة التحقق، حاول بعد شوي');
     }
-    const exists = !!db.get('SELECT 1 FROM customers WHERE phone = ?', phone);
-    return { ok: true, exists, ...(config.otpDevEcho || opts.otpEcho ? { devCode: code } : {}) };
+    return { ok: true, exists, channel: 'sms', ...(config.otpDevEcho || opts.otpEcho ? { devCode: code } : {}) };
   });
 
   app.post('/api/auth/verify', async (req) => {
@@ -179,7 +198,9 @@ export async function buildApp(opts = {}) {
       db.run('INSERT INTO customers(phone, name, created_at) VALUES(?,?,?)', phone, name, Date.now());
       c = db.get('SELECT * FROM customers WHERE phone = ?', phone);
     }
+    const hadWa = row.channel === 'whatsapp';
     db.run('DELETE FROM otp_codes WHERE phone = ?', phone);
+    if (hadWa) hub.admins({ type: 'otp' });
     return { token: issueToken({ role: 'customer', sub: phone }, TTL.customer), customer: customerRow(c) };
   });
 
@@ -340,7 +361,7 @@ export async function buildApp(opts = {}) {
 
   function adminSettings() {
     const s = db.settings();
-    return { alertAfterMin: 7, ...s, payments: { ...s.payments, online: onlinePay() }, hasRecovery: !!adminState().recoveryHash, legal: legalTexts() };
+    return { alertAfterMin: 7, ...s, payments: { ...s.payments, online: onlinePay() }, hasRecovery: !!adminState().recoveryHash, legal: legalTexts(), smsReady: smsReady(), verifyModeActive: verifyMode() };
   }
   function driversWithStats() {
     const stats = new Map(db.all(`SELECT driver_id,
@@ -363,8 +384,15 @@ export async function buildApp(opts = {}) {
       coupons: db.all('SELECT * FROM coupons ORDER BY created_at DESC').map(couponRow),
       stores: loadStores(db),
       settings: adminSettings(),
+      otp: otpPending(),
       cashWithDrivers: round2(db.get("SELECT COALESCE(SUM(total),0) s FROM orders WHERE status = 'delivered' AND settled = 0").s),
     };
+  });
+
+  app.get('/api/admin/otp', { preHandler: isAdmin }, async () => otpPending());
+  app.post('/api/admin/otp/:phone/sent', { preHandler: isAdmin }, async (req) => {
+    db.run("UPDATE otp_codes SET wa_sent_at = ? WHERE phone = ? AND channel = 'whatsapp'", Date.now(), req.params.phone);
+    return { ok: true };
   });
 
   app.post('/api/admin/orders/:id/assign', { preHandler: isAdmin }, async (req) => {
@@ -539,6 +567,7 @@ export async function buildApp(opts = {}) {
     if (b.bankOn !== undefined) patch.payments = { ...cur.payments, cash: true, bank: !!b.bankOn };
     if (b.loyaltyOn !== undefined) patch.loyaltyOn = !!b.loyaltyOn;
     if (b.loyaltyEvery !== undefined) patch.loyaltyEvery = Math.max(2, Math.floor(Number(b.loyaltyEvery) || 5));
+    if (b.verifyMode !== undefined) patch.verifyMode = b.verifyMode === 'whatsapp' ? 'whatsapp' : 'sms';
     if (b.alertAfterMin !== undefined) patch.alertAfterMin = Math.min(120, Math.max(0, Math.floor(Number(b.alertAfterMin) || 0)));
     for (const k of ['legalName', 'crNumber', 'vatNumber']) if (b[k] !== undefined) patch[k] = String(b[k]).trim().slice(0, 120);
     if (b.legal && typeof b.legal === 'object') {

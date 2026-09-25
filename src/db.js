@@ -153,6 +153,10 @@ function migrate(db) {
   const add = (t, col, def) => { if (!cols(t).includes(col)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${col} ${def}`); };
   add('stores', 'open_at', 'TEXT');
   add('stores', 'close_at', 'TEXT');
+  /* التحقق عبر واتساب الإدارة: الرمز يظهر للإدارة لترسله يدوياً */
+  add('otp_codes', 'channel', "TEXT NOT NULL DEFAULT 'sms'");
+  add('otp_codes', 'plain_code', 'TEXT');
+  add('otp_codes', 'wa_sent_at', 'INTEGER');
 }
 
 function wrap(db) {

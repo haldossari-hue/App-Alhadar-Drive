@@ -104,7 +104,7 @@ function refreshSoon(what = 'role') {
 }
 
 function onEvent(ev) {
-  if (ev.type === 'order' || ev.type === 'drivers' || ev.type === 'me') refreshSoon();
+  if (ev.type === 'order' || ev.type === 'drivers' || ev.type === 'me' || ev.type === 'otp') refreshSoon();
   else if (ev.type === 'catalog') refreshSoon('all');
   else if (ev.type === 'notify') {
     if (ev.onlineOnly && S.role === 'driver' && S.driver && !S.driver.online) return;
@@ -206,7 +206,10 @@ function vCustAuth() {
     const wait = Math.max(0, Math.ceil((S.resendAt - Date.now()) / 1000));
     return `<div class="wrap"><div class="center">
       <h2>${S.authExists ? 'تسجيل الدخول' : 'حساب جديد'}</h2>
-      <p class="muted" style="margin-top:0">أرسلنا رمز تحقق من 4 أرقام برسالة نصية إلى <b dir="ltr">${esc(S.authPhone)}</b></p>
+      ${S.authChannel === 'whatsapp'
+        ? `<div class="notice">📲 بيوصلك <b>رمز التحقق على واتساب</b> من رقم الإدارة${S.authSupport ? ` <b dir="ltr">${esc(S.authSupport)}</b>` : ''} إلى <b dir="ltr">${esc(S.authPhone)}</b> خلال دقائق. خلّ هذي الصفحة مفتوحة.</div>
+           ${S.authSupport ? `<a class="btn wa sm" style="margin-bottom:12px" target="_blank" rel="noopener" href="${waLink(S.authSupport)}?text=${encodeURIComponent('السلام عليكم، أبي رمز التحقق لتطبيق الهدار درايف لرقمي ' + S.authPhone)}">تأخر الرمز؟ راسل الإدارة</a>` : ''}`
+        : `<p class="muted" style="margin-top:0">أرسلنا رمز تحقق من 4 أرقام برسالة نصية إلى <b dir="ltr">${esc(S.authPhone)}</b></p>`}
       ${S.devCode ? `<div class="notice" id="devCode">وضع التطوير — الرمز: <b dir="ltr">${esc(S.devCode)}</b></div>` : ''}
       ${S.authExists ? '' : `<div class="field"><label>الاسم</label><input id="au_name" autocomplete="name" value="${esc(S.authName || '')}"></div>`}
       <div class="field otp"><label>رمز التحقق</label><input id="au_code" inputmode="numeric" autocomplete="one-time-code" maxlength="4"></div>
@@ -221,7 +224,7 @@ function vCustAuth() {
   return `<div class="wrap"><div class="center">
     ${emblem(56)}
     <h2 style="margin-top:14px">تسجيل الدخول</h2>
-    <p class="muted" style="margin-top:0">${S.afterLogin ? 'باقي خطوة وحدة: اكتب رقم جوالك عشان نأكد طلبك ونوصلك تحديثاته.' : 'اكتب رقم جوالك ونرسل لك رمز تحقق برسالة نصية.'}</p>
+    <p class="muted" style="margin-top:0">${S.afterLogin ? 'باقي خطوة وحدة: اكتب رقم جوالك عشان نأكد طلبك ونوصلك تحديثاته.' : 'اكتب رقم جوالك ونرسل لك رمز تحقق.'}</p>
     <div class="field"><label>رقم الجوال</label><input id="au_phone" inputmode="tel" dir="ltr" placeholder="05xxxxxxxx" value="${esc(S.authPhone || '')}"></div>
     ${errBox(S.authErr)}
     <button class="btn block" data-act="authPhone">إرسال الرمز</button>
@@ -236,7 +239,7 @@ function nav() {
   } else if (S.role === 'driver') {
     items = [['available', '📦', 'متاحة', S.dOrders.available.length], ['mine', '🛵', 'طلباتي', S.dOrders.mine.length], ['done', '💵', 'المنجزة']];
   } else {
-    const nw = S.adm.orders.filter((o) => o.status === 'new').length;
+    const nw = S.adm.orders.filter((o) => o.status === 'new').length + ((S.adm.otp || []).filter((r) => !r.waSentAt).length);
     items = [['aorders', '🧾', 'الطلبات', nw], ['coupons', '🎟️', 'كوبونات'], ['prices', '🏷️', 'الأسعار'], ['stores', '🏪', 'المتاجر'], ['drivers', '🛵', 'السائقون'], ['settings', '⚙️', 'الإعدادات']];
   }
   const cur = S.view.name;
@@ -627,9 +630,22 @@ function vAOrders() {
       <div class="stat"><b>${active.length}</b><small>طلبات قيد التنفيذ</small></div>
       <div class="stat"><b>${fmt(S.adm.cashWithDrivers)}</b><small>كاش لدى السائقين</small></div>
     </div>
+    ${otpCard()}
     <h2>الطلبات</h2>
     <div class="chips">${Object.entries(fl).filter(([k, [, fn]]) => k !== 'refund' || O.some(fn)).map(([k, [t, fn]]) => `<button class="chip ${k === f ? 'on' : ''}" data-act="ofilter" data-v="${k}">${t} (${O.filter(fn).length})</button>`).join('')}</div>
     ${list.length ? list.map(aOrder).join('') : `<div class="empty"><span class="e">🧾</span>لا توجد طلبات هنا.</div>`}
+  </div>`;
+}
+function otpCard() {
+  const list = (S.adm && S.adm.otp) || [];
+  if (!list.length) return '';
+  return `<div class="card otpcard" style="margin-top:14px">
+    <div class="oh"><b>🔐 عملاء ينتظرون رمز التحقق (${list.length})</b></div>
+    <p class="hint" style="margin:4px 0 8px">اضغط "إرسال بواتساب"، وبيفتح واتساب على محادثة العميل والرسالة جاهزة، وأنت تضغط إرسال.</p>
+    ${list.map((r) => `<div class="otprow">
+      <span><b dir="ltr">${esc(r.phone)}</b> ${r.exists ? `<small>— ${esc(r.name)}</small>` : '<span class="pill warn">جديد</span>'}<br><small class="muted">${ago(r.t)} · الرمز <b dir="ltr">${esc(r.code)}</b>${r.waSentAt ? ' · ✓ أُرسل' : ''}</small></span>
+      <button class="btn sm ${r.waSentAt ? 'line' : 'wa'}" data-act="sendOtpWa" data-p="${esc(r.phone)}" data-c="${esc(r.code)}">${r.waSentAt ? 'إعادة الإرسال' : '📲 إرسال بواتساب'}</button>
+    </div>`).join('')}
   </div>`;
 }
 function aOrder(o) {
@@ -750,6 +766,9 @@ function vSettings() {
     <div class="field"><label>أحياء الهدار المتاحة للتوصيل</label><textarea id="st_districts" style="min-height:130px">${esc((st.districts || []).join('\n'))}</textarea><span class="hint">كل حي في سطر. العميل لا يقدر يطلب إلا لحي من هذه القائمة.</span></div>
     <div class="field"><label>رقم تواصل الإدارة (يظهر للعملاء)</label><input id="st_support" dir="ltr" inputmode="tel" value="${esc(st.supportPhone || '')}" placeholder="05xxxxxxxx"></div>
     <div class="field"><label>إعلان يظهر للعملاء (اختياري)</label><input id="st_ann" value="${esc(st.announcement || '')}" placeholder="مثال: التوصيل مجاني يوم الجمعة"></div>
+    <div class="field"><label>طريقة التحقق من جوال العميل</label>
+      <select id="st_verify"><option value="whatsapp" ${st.verifyModeActive === 'whatsapp' ? 'selected' : ''}>واتساب الإدارة (أنت ترسل الرمز يدوياً)</option><option value="sms" ${st.verifyModeActive === 'sms' ? 'selected' : ''} ${st.smsReady ? '' : 'disabled'}>رسالة نصية تلقائية${st.smsReady ? '' : ' — يحتاج تفعيل مزوّد الرسائل'}</option></select>
+      <span class="hint">${st.smsReady ? 'مزوّد الرسائل مفعّل.' : 'مزوّد الرسائل (Unifonic أو Taqnyat) مو مفعّل للحين، فالتحقق يتم عن طريق واتساب الإدارة تلقائياً.'} المستخدم يسجّل مرة وحدة كل 90 يوم.</span></div>
     <div class="field"><label>نبّهني إذا طلب ما استلمه سائق خلال (دقيقة)</label><input id="st_alert" type="number" min="0" max="120" dir="ltr" value="${Number(st.alertAfterMin ?? 7)}"><span class="hint">يوصلك تنبيه، ويتذكّر السائقين المتصلين بالطلب. ينطبق كذلك على الطلبات الخاصة اللي ما تسعّرت. اكتب 0 لإيقافه.</span></div>
     <h2>بيانات المنشأة</h2>
     <p class="hint" style="margin-top:0">تظهر في أسفل التطبيق وصفحات السياسات. بوابة الدفع (Moyasar) ونظام التجارة الإلكترونية يطلبونها.</p>
@@ -1287,6 +1306,12 @@ const ACT = {
     go('store', s.id);
     if (storeOpenNow(s)) openSheet({ type: 'cart' });
   },
+  sendOtpWa(b) {
+    const phone = b.dataset.p, code = b.dataset.c;
+    /* نفتح واتساب قبل أي انتظار عشان المتصفح ما يحجب النافذة */
+    window.open(waLink(phone) + '?text=' + encodeURIComponent(`رمز الدخول للهدار درايف: ${code}\nلا تشاركه مع أحد.`), '_blank', 'noopener');
+    call('POST', `/api/admin/otp/${encodeURIComponent(phone)}/sent`).then(() => refreshSoon()).catch(() => {});
+  },
   async markRefunded(b) {
     const o = S.adm.orders.find((x) => x.id === b.dataset.id); if (!o) return;
     askConfirm(`تأكيد إنك رجّعت ${fmt(o.refundDue)} للعميل ${o.customer.name}؟`, async () => { await call('POST', `/api/admin/orders/${o.id}/refunded`); toast('تم تسجيل الاسترجاع'); await loadRole(); render(); }, 'palm');
@@ -1305,6 +1330,7 @@ const ACT = {
     try {
       const r = await api('POST', '/api/auth/otp', { phone });
       S.authExists = r.exists; S.devCode = r.devCode || ''; S.authStep = 'code'; S.resendAt = Date.now() + 60000;
+      S.authChannel = r.channel; S.authSupport = r.supportPhone || '';
       tickResend();
     } catch (err) { S.authErr = err.message; }
     render();
@@ -1484,7 +1510,7 @@ const ACT = {
       deliveryFee: v('st_fee'), minOrder: v('st_min'), supportPhone: v('st_support'), districts: v('st_districts'), announcement: v('st_ann'),
       bankName: v('st_bankname'), bankHolder: v('st_bankholder'), bankIban: v('st_bankiban'), bankOn: document.getElementById('st_bankon').checked,
       newPin: v('st_pin').trim(), recovery: v('st_recovery').trim(),
-      alertAfterMin: v('st_alert'), legalName: v('st_legal'), crNumber: v('st_cr'), vatNumber: v('st_vat'),
+      alertAfterMin: v('st_alert'), verifyMode: v('st_verify'), legalName: v('st_legal'), crNumber: v('st_cr'), vatNumber: v('st_vat'),
       legal: { terms: v('lg_terms'), privacy: v('lg_privacy'), refund: v('lg_refund') },
     });
     S.legalData = null;

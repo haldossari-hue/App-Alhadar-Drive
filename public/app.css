@@ -372,3 +372,6 @@ details summary{cursor:pointer;margin-top:8px;font-size:14px;font-weight:500}
 .srow.closed{opacity:.72}
 details.card summary{margin-top:0}
 input[type=time]{width:100%;padding:11px 13px;border-radius:12px;border:1px solid var(--line);background:var(--surface)}
+
+.otpcard{border-color:var(--sun);background:var(--sun-soft)}
+.otprow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px dashed var(--line)}

@@ -485,3 +485,27 @@ test('صفحات السياسات عامة وقابلة للتعديل، وبي�
   assert.equal(page.statusCode, 200);
   assert.match(page.body, /<div id="app">/);
 });
+
+test('التحقق عبر واتساب الإدارة: الرمز ما ينرسل SMS، ويظهر للإدارة فقط، ويختفي بعد الدخول', async () => {
+  await freshAdmin();
+  await ok(req('PUT', '/api/admin/settings', { verifyMode: 'whatsapp' }, admin));
+  try {
+    const before = sent.length;
+    const o = await ok(req('POST', '/api/auth/otp', { phone: '0500000040' }));
+    assert.equal(o.channel, 'whatsapp');
+    assert.equal(sent.length, before, 'ما ينرسل SMS');
+    assert.ok(pushes.some(([k, p]) => k === 'admins' && p.tag === 'otp-0500000040'), 'إشعار للإدارة');
+    const list = await ok(req('GET', '/api/admin/otp', null, admin));
+    const row = list.find((r) => r.phone === '0500000040');
+    assert.equal(row.code, o.devCode);
+    assert.equal(row.exists, false);
+    const cust = await customer('0500000041');
+    assert.equal((await req('GET', '/api/admin/otp', null, cust)).status, 401, 'العميل ما يشوف الرموز');
+    await ok(req('POST', '/api/admin/otp/0500000040/sent', {}, admin));
+    assert.ok((await ok(req('GET', '/api/admin/otp', null, admin))).find((r) => r.phone === '0500000040').waSentAt);
+    await ok(req('POST', '/api/auth/verify', { phone: '0500000040', code: row.code, name: 'واتساب' }));
+    assert.ok(!(await ok(req('GET', '/api/admin/otp', null, admin))).some((r) => r.phone === '0500000040'), 'يختفي بعد الدخول');
+    const st = (await ok(req('GET', '/api/admin/data', null, admin))).settings;
+    assert.equal(st.verifyModeActive, 'whatsapp');
+  } finally { await ok(req('PUT', '/api/admin/settings', { verifyMode: 'sms' }, admin)); }
+});
