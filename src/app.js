@@ -659,8 +659,8 @@ export async function buildApp(opts = {}) {
     hub.admins(ev);
     const label = { customer: 'العميل', driver: 'السائق', admin: 'الإدارة' }[req.who.role];
     const pl = { title: 'رسالة من ' + label + ' — #' + o.code, body: text.slice(0, 120), tag: 'chat-' + o.id };
-    if (req.who.role !== 'customer') push.customer(o.customer.phone, { ...pl, url: '/?r=customer&o=' + o.id + '&chat=1' });
-    if (req.who.role !== 'driver' && o.driverId) push.driver(o.driverId, { ...pl, url: '/?r=driver&chat=' + o.id });
+    if (req.who.role !== 'customer') push.customer(o.customer.phone, { ...pl, url: '/order/' + o.id + '?chat=1' });
+    if (req.who.role !== 'driver' && o.driverId) push.driver(o.driverId, { ...pl, url: '/driver?chat=' + o.id });
     return msg;
   });
 
@@ -753,11 +753,11 @@ export async function buildApp(opts = {}) {
   });
   app.get('/api/payments/return/:pid', async (req, reply) => {
     const p = db.get('SELECT * FROM payments WHERE id = ?', req.params.pid);
-    if (!p) return reply.redirect('/?r=customer');
+    if (!p) return reply.redirect('/');
     await reconcile(p).catch((e) => req.log.error(e));
     const o = db.get('SELECT id FROM orders WHERE group_code = ? ORDER BY code LIMIT 1', p.group_code);
     const n = db.get('SELECT COUNT(*) n FROM orders WHERE group_code = ?', p.group_code).n;
-    return reply.redirect(n > 1 || !o ? '/?r=customer&v=orders' : '/?r=customer&o=' + o.id);
+    return reply.redirect(n > 1 || !o ? '/orders' : '/order/' + o.id);
   });
   /* بوابة تجريبية للتطوير فقط */
   if (!config.isProd) {
@@ -789,10 +789,10 @@ export async function buildApp(opts = {}) {
       const text = pending ? `⏰ طلب خاص #${o.code} ينتظر تسعيرك من ${mins} دقائق` : `⏰ الطلب #${o.code} بدون سائق من ${mins} دقائق`;
       hub.admins({ type: 'notify', text, sound: true });
       hub.admins({ type: 'order', id: o.id });
-      push.admins({ title: pending ? 'طلب ينتظر التسعير' : 'طلب بدون سائق', body: text.replace('⏰ ', ''), url: '/?r=admin', tag: 'stale-' + o.id });
+      push.admins({ title: pending ? 'طلب ينتظر التسعير' : 'طلب بدون سائق', body: text.replace('⏰ ', ''), url: '/admin', tag: 'stale-' + o.id });
       if (!pending) {
         hub.drivers({ type: 'notify', text: `🔔 الطلب #${o.code} لسا ينتظر سائق`, sound: true, onlineOnly: true });
-        push.onlineDrivers({ title: 'طلب ينتظر سائق', body: `#${o.code} — ${o.storeName} ← ${o.customer.district}`, url: '/?r=driver', tag: 'avail-' + o.id });
+        push.onlineDrivers({ title: 'طلب ينتظر سائق', body: `#${o.code} — ${o.storeName} ← ${o.customer.district}`, url: '/driver', tag: 'avail-' + o.id });
       }
     }
   }

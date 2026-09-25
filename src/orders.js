@@ -27,28 +27,28 @@ export function createOrderService({ db, hub, push, log }) {
     hub.admins(ev);
     if (visibleNow && (!prev || prev.status === 'awaiting_payment')) {
       hub.admins({ type: 'notify', text: 'طلب جديد #' + o.code, sound: true });
-      push.admins({ title: 'طلب جديد #' + o.code, body: `${o.storeName} — ${round2(o.total)} ر.س`, url: '/?r=admin', tag: 'order-' + o.id });
+      push.admins({ title: 'طلب جديد #' + o.code, body: `${o.storeName} — ${round2(o.total)} ر.س`, url: '/admin', tag: 'order-' + o.id });
     }
     if (isClaimable || wasClaimable) hub.drivers(ev);
     if (isClaimable && !wasClaimable) {
       hub.drivers({ type: 'notify', text: 'طلب متاح للتوصيل #' + o.code, sound: true, onlineOnly: true });
-      push.onlineDrivers({ title: 'طلب متاح للتوصيل', body: `#${o.code} — ${o.storeName} ← ${o.customer.district}`, url: '/?r=driver', tag: 'avail-' + o.id });
+      push.onlineDrivers({ title: 'طلب متاح للتوصيل', body: `#${o.code} — ${o.storeName} ← ${o.customer.district}`, url: '/driver', tag: 'avail-' + o.id });
     }
     if (o.driverId) hub.driver(o.driverId, ev);
     if (prev && prev.driverId && prev.driverId !== o.driverId) hub.driver(prev.driverId, ev);
     if (extra.assignedBy === 'admin' && o.driverId) {
       hub.driver(o.driverId, { type: 'notify', text: 'تم تعيين طلب لك #' + o.code, sound: true });
-      push.driver(o.driverId, { title: 'تم تعيين طلب لك', body: '#' + o.code + ' — ' + o.storeName, url: '/?r=driver', tag: 'mine-' + o.id });
+      push.driver(o.driverId, { title: 'تم تعيين طلب لك', body: '#' + o.code + ' — ' + o.storeName, url: '/driver', tag: 'mine-' + o.id });
     }
     hub.customer(o.customer.phone, ev);
     if (prev && prev.status !== o.status && ST[o.status] && visibleNow) {
       const t = 'طلبك #' + o.code + ' — ' + ST[o.status].t;
       hub.customer(o.customer.phone, { type: 'notify', text: t, sound: true });
-      push.customer(o.customer.phone, { title: ST[o.status].t, body: 'طلب #' + o.code + ' من ' + o.storeName, url: '/?r=customer&o=' + o.id, tag: 'cust-' + o.id });
+      push.customer(o.customer.phone, { title: ST[o.status].t, body: 'طلب #' + o.code + ' من ' + o.storeName, url: '/order/' + o.id, tag: 'cust-' + o.id });
     }
     if (prev && prev.isCustom && prev.priceStatus === 'pending' && o.priceStatus === 'priced') {
       hub.customer(o.customer.phone, { type: 'notify', text: 'تم تسعير طلبك #' + o.code + ': ' + round2(o.total) + ' ر.س', sound: true });
-      push.customer(o.customer.phone, { title: 'تم تسعير طلبك', body: '#' + o.code + ' — الإجمالي ' + round2(o.total) + ' ر.س', url: '/?r=customer&o=' + o.id });
+      push.customer(o.customer.phone, { title: 'تم تسعير طلبك', body: '#' + o.code + ' — الإجمالي ' + round2(o.total) + ' ر.س', url: '/order/' + o.id });
     }
   }
 
@@ -302,7 +302,7 @@ export function createOrderService({ db, hub, push, log }) {
     });
     if (earned) {
       hub.customer(o.customer.phone, { type: 'notify', text: '🎁 كسبت توصيلة مجانية! تنستخدم تلقائياً بطلبك الجاي لو فعّلتها', sound: true });
-      push.customer(o.customer.phone, { title: 'كسبت توصيلة مجانية 🎁', body: 'استخدمها بأي طلب جاي', url: '/?r=customer' });
+      push.customer(o.customer.phone, { title: 'كسبت توصيلة مجانية 🎁', body: 'استخدمها بأي طلب جاي', url: '/' });
     }
     hub.customer(o.customer.phone, { type: 'me' });
   }
@@ -328,7 +328,7 @@ export function createOrderService({ db, hub, push, log }) {
     }
     if (list.length) {
       hub.admins({ type: 'notify', text: `💸 دفع وصل لطلب ملغي #${group} — استرجع ${round2(sum)} ر.س للعميل`, sound: true });
-      push.admins({ title: 'مبلغ يحتاج استرجاع 💸', body: `العميل دفع ${round2(sum)} ر.س لطلب ملغي #${code}`, url: '/?r=admin', tag: 'refund-' + group });
+      push.admins({ title: 'مبلغ يحتاج استرجاع 💸', body: `العميل دفع ${round2(sum)} ر.س لطلب ملغي #${code}`, url: '/admin', tag: 'refund-' + group });
     }
     return list.length;
   }

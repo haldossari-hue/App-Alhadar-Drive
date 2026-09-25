@@ -10,8 +10,8 @@ test('صفحات السياسات تفتح برابط مباشر بدون تسج
   await expect(page).toHaveURL(/\/legal\/terms$/);
   await expect(page.locator('.legaltxt')).toContainText('عن الخدمة');
   await page.getByRole('button', { name: 'رجوع للتطبيق' }).click();
-  await expect(page.getByRole('button', { name: /أبي أطلب/ })).toBeVisible();
-  await expect(page.locator('.leglinks')).toBeVisible();
+  await expect(page.locator('.hero')).toBeVisible();
+  await expect(page.locator('.leglinks').first()).toContainText('الشروط والأحكام');
 });
 
 test('العميل: إعادة نفس الطلب بضغطة، والمتجر خارج الدوام يظهر مغلق', async ({ page, request }) => {
@@ -62,9 +62,49 @@ test('الإدارة: مواعيد العمل من محرر المتجر، وب�
   await page.getByRole('button', { name: 'حفظ الإعدادات' }).click();
   await expect(page.locator('#toast')).toContainText('تم حفظ الإعدادات');
 
-  await page.getByRole('button', { name: 'تبديل' }).click();
+  await page.getByRole('button', { name: /المتجر/ }).click();
   await expect(page.locator('.foot')).toContainText('س.ت 7001234567');
   const boot = await (await page.request.get('/api/bootstrap')).json();
   const s = boot.stores.find((x) => x.name === 'تموينات حاتم');
   expect([s.openAt, s.closeAt]).toEqual(['07:00', '01:00']);
+});
+
+test('الرابط العام: الزائر يتصفح ويضيف للسلة بدون تسجيل، والتسجيل يطلب عند الطلب ثم يكمل', async ({ page, request }) => {
+  await page.goto('/');
+  await expect(page.locator('.hero')).toBeVisible(); // المتاجر مباشرة بدون شاشة اختيار أو تسجيل
+  await expect(page.locator('#au_phone')).toHaveCount(0);
+  await page.locator('.srow', { hasText: 'مطعم الوادي' }).click();
+  await expect(page).toHaveURL(/\/store\//);
+  const storeUrl = page.url();
+  await page.locator('.pcard', { hasText: 'كبسة لحم' }).locator('.add').click();
+  await page.goBack(); // زر الرجوع يرجع للرئيسية بدل ما يطلع من التطبيق
+  await expect(page.locator('.hero')).toBeVisible();
+  await page.goForward();
+  await expect(page.locator('.sban')).toContainText('مطعم الوادي');
+
+  await page.locator('.cartbar button').click();
+  await page.getByRole('button', { name: 'متابعة الطلب' }).click();
+  await expect(page.getByText('باقي خطوة وحدة')).toBeVisible();
+  await page.locator('#au_phone').fill('0501110030');
+  await page.getByRole('button', { name: 'إرسال الرمز' }).click();
+  const code = (await page.locator('#devCode b').textContent()).trim();
+  await page.locator('#au_name').fill('زائر جديد');
+  await page.locator('#au_code').fill(code);
+  await page.locator('[data-act="authVerify"]').click();
+  await expect(page.getByRole('heading', { name: 'تأكيد الطلب' })).toBeVisible(); // يكمل الطلب مباشرة
+  await expect(page.locator('.sh')).toContainText('مطعم الوادي');
+  await fillAddress(page);
+  await page.locator('[data-act="placeOrder"]').click();
+  await expect(page.locator('.oh .pill')).toHaveText('طلب جديد');
+  await expect(page).toHaveURL(/\/order\//);
+
+  // رابط المتجر المشترك يفتح مباشرة لأي شخص
+  const other = await (await page.context().browser().newContext({ locale: 'ar-SA' })).newPage();
+  await other.goto(storeUrl);
+  await expect(other.locator('.sban')).toContainText('مطعم الوادي');
+  // السائق والإدارة على روابطهم الخاصة
+  await other.goto('/admin');
+  await expect(other.getByRole('heading', { name: 'دخول الإدارة' })).toBeVisible();
+  await other.goto('/driver');
+  await expect(other.getByRole('heading', { name: 'دخول السائق' })).toBeVisible();
 });

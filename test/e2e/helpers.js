@@ -26,13 +26,13 @@ export async function seed(request) {
   return { t, data: await (await request.get('/api/admin/data', auth(t))).json() };
 }
 
+/* الرابط الرئيسي للعملاء، والسائق والإدارة لهم روابط خاصة */
 export async function pickRole(page, role) {
-  await page.goto('/');
-  await page.getByRole('button', { name: { customer: /أبي أطلب/, driver: /أنا سائق/, admin: /الإدارة/ }[role] }).click();
+  await page.goto({ customer: '/', driver: '/driver', admin: '/admin' }[role]);
 }
 
 export async function customerLogin(page, phone, name = 'عميل تجريبي') {
-  await pickRole(page, 'customer');
+  await page.goto('/login');
   await page.locator('#au_phone').fill(phone);
   await page.getByRole('button', { name: 'إرسال الرمز' }).click();
   const code = (await page.locator('#devCode b').textContent()).trim();

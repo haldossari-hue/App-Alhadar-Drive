@@ -5,7 +5,7 @@ import { api, upload, tokens, setAuthLostHandler, connectStream, disconnectStrea
 
 /* ============ الحالة ============ */
 const S = {
-  role: lsg('hd.role', null),
+  role: roleFromPath(location.pathname),
   view: { name: 'home' },
   boot: null,                       // {settings, stores, coupons, vapidKey}
   cart: lsg('hd.cart', { items: {} }),
@@ -23,6 +23,27 @@ const S = {
   chatMsgs: {}, chatOrderId: null, driverLoc: {}, loaded: false, showCustHelp: false,
 };
 const set = () => Object.assign({}, DEFAULT_SETTINGS, S.boot ? S.boot.settings : {});
+
+/* ============ الروابط: كل صفحة لها رابط، والرابط الرئيسي يفتح المتاجر مباشرة ============ */
+function roleFromPath(p) { return /^\/driver/.test(p) ? 'driver' : /^\/admin/.test(p) ? 'admin' : 'customer'; }
+const ROLE_HOME = { customer: 'home', driver: 'available', admin: 'aorders' };
+const CUST_PATHS = { cat: 1, store: 1, order: 1, orders: 0, profile: 0, login: 0 };
+function pathFor(role, v) {
+  if (role === 'driver') return '/driver';
+  if (role === 'admin') return '/admin';
+  if (!v || v.name === 'home' || !(v.name in CUST_PATHS)) return '/';
+  return '/' + v.name + (CUST_PATHS[v.name] && v.arg ? '/' + encodeURIComponent(v.arg) : '');
+}
+function viewFromPath(p) {
+  const m = p.match(/^\/(cat|store|order|orders|profile|login)(?:\/([^/?#]+))?/);
+  return m ? { name: m[1], arg: m[2] ? decodeURIComponent(m[2]) : undefined } : { name: 'home' };
+}
+function syncUrl(replace) {
+  const u = pathFor(S.role, S.view);
+  if (location.pathname === u) return;
+  if (replace) history.replaceState(null, '', u); else history.pushState(null, '', u);
+}
+const needsLogin = (v) => ['orders', 'order', 'profile', 'login'].includes(v.name);
 const stores = () => (S.boot ? S.boot.stores : []);
 const named = () => stores().filter((s) => (s.name || '').trim());
 const sname = (s) => (s.name || '').trim() || ('متجر بدون اسم — ' + ((CAT[s.category] || {}).name || ''));
@@ -136,11 +157,10 @@ function render() {
   S.pending = false;
   const app = document.getElementById('app');
   if (S.legal) { app.innerHTML = vLegal(); return; }
-  if (!S.role) { app.innerHTML = vChooser(); return; }
   if (!S.boot) { app.innerHTML = topBar() + `<div class="wrap"><div class="empty"><span class="e">🛵</span>جارِ تحميل الهدار درايف…</div></div>`; return; }
   if (S.role === 'customer') {
-    if (!loggedIn()) app.innerHTML = topBar() + vCustAuth();
-    else if (!S.customer) app.innerHTML = topBar() + `<div class="wrap"><div class="empty"><span class="e">👤</span>جارِ تحميل حسابك…</div></div>`;
+    if (!loggedIn() && needsLogin(S.view)) app.innerHTML = topBar() + vCustAuth() + nav();
+    else if (loggedIn() && !S.customer) app.innerHTML = topBar() + `<div class="wrap"><div class="empty"><span class="e">👤</span>جارِ تحميل حسابك…</div></div>`;
     else app.innerHTML = topBar() + vCustomer() + cartBar() + nav();
   } else if (S.role === 'driver') app.innerHTML = topBar() + vDriver() + (loggedIn() && S.driver ? nav() : '');
   else app.innerHTML = topBar() + vAdmin() + (loggedIn() && S.adm ? nav() : '');
@@ -151,7 +171,11 @@ function topBar() {
   const lab = { customer: 'واجهة العميل', driver: 'واجهة السائق', admin: 'لوحة الإدارة' }[S.role];
   let extra = '';
   if (S.role === 'driver' && loggedIn() && S.driver) extra = `<button class="ib" data-act="drvOnline">${S.driver.online ? '🟢 متصل' : '⚪ غير متصل'}</button>`;
-  return `<header class="top"><div class="in"><div class="brand">${emblem(34)}<span class="bt"><b>الهدار درايف</b><small>${lab}</small></span></div><div class="sp"></div>${extra}<button class="ib" data-act="switchRole" aria-label="تبديل الواجهة">تبديل</button></div><div class="najdi"></div></header>`;
+  const right = S.role === 'customer'
+    ? (loggedIn() ? '' : `<button class="ib" data-go="login">دخول</button>`)
+    : `<button class="ib" data-act="switchRole" aria-label="المتجر">🛍️ المتجر</button>`;
+  const sub = S.role === 'customer' ? 'توصيل داخل الهدار' : lab;
+  return `<header class="top"><div class="in"><button class="brand" data-go="home" style="border:0;background:none;padding:0;text-align:right">${emblem(34)}<span class="bt"><b>الهدار درايف</b><small>${sub}</small></span></button><div class="sp"></div>${extra}${right}</div><div class="najdi"></div></header>`;
 }
 const LEGAL_T = { terms: 'الشروط والأحكام', privacy: 'سياسة الخصوصية', refund: 'الاسترجاع والإلغاء' };
 function vLegal() {
@@ -175,20 +199,6 @@ window.addEventListener('popstate', () => {
   S.legal = m ? m[1] : null; render();
 });
 
-function vChooser() {
-  return `<div class="chooser">
-    ${emblem(76)}
-    <div class="wm" style="margin-top:16px"><span class="a">الهدار</span><span class="b">درايف</span></div>
-    <p class="tag">من وادي الهدار لين بابك. مطاعم وبقالات وصيدليات، ولين السبّاك والكهربائي والغاز.</p>
-    <div class="heritage">وادي الهدار من أكبر أودية الأفلاج وأغزرها ماءً، ينحدر من جبل طويق شرقاً بين النخيل. ومنه أخذنا الاسم والهوية.</div>
-    <div class="roles">
-      <button class="role" data-act="pickRole" data-v="customer"><span class="e">🛍️</span><span><b>أبي أطلب</b><small>تصفح المتاجر واطلب لبيتك</small></span></button>
-      <button class="role" data-act="pickRole" data-v="driver"><span class="e">🛵</span><span><b>أنا سائق</b><small>استلم الطلبات ووصّلها</small></span></button>
-      <button class="role" data-act="pickRole" data-v="admin"><span class="e">🗝️</span><span><b>الإدارة</b><small>المتاجر والأسعار والطلبات والسائقين</small></span></button>
-    </div>
-    <div class="foot"><div class="najdi"></div>خدمة توصيل محلية لمدينة الهدار، محافظة الأفلاج${S.boot ? bizLine() : ''}${legalLinks()}</div>
-  </div>`;
-}
 const errBox = (m) => (m ? `<div class="notice errbox">${esc(m)}</div>` : '');
 
 function vCustAuth() {
@@ -211,7 +221,7 @@ function vCustAuth() {
   return `<div class="wrap"><div class="center">
     ${emblem(56)}
     <h2 style="margin-top:14px">تسجيل الدخول</h2>
-    <p class="muted" style="margin-top:0">اكتب رقم جوالك ونرسل لك رمز تحقق برسالة نصية.</p>
+    <p class="muted" style="margin-top:0">${S.afterLogin ? 'باقي خطوة وحدة: اكتب رقم جوالك عشان نأكد طلبك ونوصلك تحديثاته.' : 'اكتب رقم جوالك ونرسل لك رمز تحقق برسالة نصية.'}</p>
     <div class="field"><label>رقم الجوال</label><input id="au_phone" inputmode="tel" dir="ltr" placeholder="05xxxxxxxx" value="${esc(S.authPhone || '')}"></div>
     ${errBox(S.authErr)}
     <button class="btn block" data-act="authPhone">إرسال الرمز</button>
@@ -222,7 +232,7 @@ function nav() {
   let items = [];
   if (S.role === 'customer') {
     const act = S.orders.filter((o) => ACTIVE.includes(o.status) || o.status === 'awaiting_payment').length;
-    items = [['home', '🏠', 'الرئيسية'], ['orders', '🧾', 'طلباتي', act], ['profile', '👤', 'بياناتي']];
+    items = [['home', '🏠', 'الرئيسية'], ['orders', '🧾', 'طلباتي', act], ['profile', '👤', loggedIn() ? 'بياناتي' : 'دخول']];
   } else if (S.role === 'driver') {
     items = [['available', '📦', 'متاحة', S.dOrders.available.length], ['mine', '🛵', 'طلباتي', S.dOrders.mine.length], ['done', '💵', 'المنجزة']];
   } else {
@@ -231,12 +241,12 @@ function nav() {
   }
   const cur = S.view.name;
   return `<nav class="nav"><div class="in">${items.map(([v, e, t, b]) => {
-    const on = cur === v || (v === 'home' && ['cat', 'store'].includes(cur)) || (v === 'orders' && cur === 'order');
+    const on = cur === v || (v === 'home' && ['cat', 'store'].includes(cur)) || (v === 'orders' && cur === 'order') || (v === 'profile' && cur === 'login');
     return `<button class="${on ? 'on' : ''}" data-go="${v}"><span class="ne">${e}</span>${t}${b ? `<span class="badge">${b}</span>` : ''}</button>`;
   }).join('')}</div></nav>`;
 }
 function pushBar() {
-  if (!pushSupported() || Notification.permission !== 'default' || lsg('hd.pushAsked.' + S.role, false)) return '';
+  if (!loggedIn() || !pushSupported() || Notification.permission !== 'default' || lsg('hd.pushAsked.' + S.role, false)) return '';
   const txt = { customer: 'فعّل الإشعارات عشان يوصلك تحديث طلبك حتى لو التطبيق مقفل', driver: 'فعّل الإشعارات عشان توصلك الطلبات الجديدة حتى لو الجوال مقفل', admin: 'فعّل الإشعارات عشان توصلك الطلبات الجديدة فوراً' }[S.role];
   return `<div class="pushbar">🔔 <span>${txt}</span><button class="btn sm" data-act="enablePush">تفعيل</button><button class="x" data-act="dismissPush" aria-label="إخفاء">✕</button></div>`;
 }
@@ -249,6 +259,7 @@ function vCustomer() {
   if (v.name === 'orders') return vMyOrders();
   if (v.name === 'order') return vOrder(v.arg);
   if (v.name === 'profile') return vProfile();
+  if (v.name === 'login') { S.view = { name: 'home' }; syncUrl(true); }
   return vHome();
 }
 function catsGrid() { return `<div class="cats">${CATS.map((c) => `<button class="cat" style="--t:${esc(c.t || TINTS[0])}" data-go="cat" data-arg="${c.id}"><span class="ce">${c.emoji}</span>${c.name}</button>`).join('')}</div>`; }
@@ -292,7 +303,7 @@ function quickStrip() {
 }
 function legalLinks() { return `<div class="leglinks"><a href="/legal/terms" data-legal="terms">الشروط والأحكام</a> · <a href="/legal/privacy" data-legal="privacy">الخصوصية</a> · <a href="/legal/refund" data-legal="refund">الاسترجاع</a></div>`; }
 function bizLine() { const st = set(); const bits = [st.legalName, st.crNumber ? 'س.ت ' + st.crNumber : '', st.vatNumber ? 'الرقم الضريبي ' + st.vatNumber : ''].filter(Boolean); return bits.length ? `<br><small>${esc(bits.join(' · '))}</small>` : ''; }
-function footer() { const sp = set().supportPhone; return `<div class="foot"><div class="najdi"></div>الهدار درايف، توصيل محلي داخل مدينة الهدار${sp ? `<br>للتواصل: <a href="tel:${esc(sp)}" dir="ltr">${esc(sp)}</a>` : ''}${bizLine()}${legalLinks()}</div>`; }
+function footer() { const sp = set().supportPhone; return `<div class="foot"><div class="najdi"></div>الهدار درايف، توصيل محلي داخل مدينة الهدار${sp ? `<br>للتواصل: <a href="tel:${esc(sp)}" dir="ltr">${esc(sp)}</a>` : ''}${bizLine()}${legalLinks()}<div class="leglinks"><a href="/driver" data-act="toRole" data-v="driver">دخول السائقين</a></div></div>`; }
 function updateResults() {
   const el = document.getElementById('results'); if (!el) return;
   const q = norm(S.q);
@@ -346,6 +357,7 @@ function vStore(id) {
       </div><div class="najdi"></div>
     </div>
     ${s.note ? `<div class="notice">${esc(s.note)}</div>` : ''}
+    <div class="row" style="justify-content:flex-end;margin-top:8px"><button class="btn sm line" data-act="shareStore" data-id="${s.id}" data-n="${esc(s.name)}">🔗 مشاركة رابط المتجر</button></div>
     ${!storeOpenNow(s) ? `<div class="notice errbox">المتجر مغلق الآن${s.open !== false && hoursLabel(s) ? `، أوقات العمل ${esc(hoursLabel(s))}` : ''}. تقدر تتصفح المنتجات، والطلب يتاح وقت الدوام.</div>` : ''}
     <div class="chips" style="margin:14px 0 2px">
       <button class="chip ${S.storeChoice !== 'custom' ? 'on' : ''}" data-act="storeMode" data-v="list">📋 من قائمة المتجر</button>
@@ -993,8 +1005,18 @@ function shCoupon() {
 /* ============ الأحداث ============ */
 function go(name, arg) {
   if (name === 'store' && (S.view.name !== 'store' || S.view.arg !== arg)) { S.storeChoice = 'list'; S.customOrder = {}; }
-  S.view = { name, arg }; render(); window.scrollTo(0, 0);
+  S.view = { name, arg };
+  syncUrl();
+  render(); window.scrollTo(0, 0);
 }
+window.addEventListener('popstate', () => {
+  if (/^\/legal\//.test(location.pathname)) return;
+  S.legal = null;
+  const role = roleFromPath(location.pathname);
+  if (S.sheet) closeSheet();
+  if (role !== S.role) { S.role = role; S.view = { name: ROLE_HOME[role] }; startRole(); return; }
+  if (role === 'customer') { S.view = viewFromPath(location.pathname); render(); window.scrollTo(0, 0); }
+});
 document.addEventListener('click', async (e) => {
   const lg = e.target.closest('[data-legal]');
   if (lg) { e.preventDefault(); closeSheet(); openLegal(lg.dataset.legal); return; }
@@ -1106,13 +1128,21 @@ function draftCustomer() {
 
 const ACT = {
   legalTab(b) { S.legal = b.dataset.v; history.replaceState({ legal: S.legal }, '', '/legal/' + S.legal); render(); },
-  closeLegal() { S.legal = null; history.replaceState(null, '', '/'); render(); },
-  pickRole(b) { S.role = b.dataset.v; lss('hd.role', S.role); S.view = { name: { customer: 'home', driver: 'available', admin: 'aorders' }[S.role] }; startRole(); },
-  switchRole() { disconnectStream(); S.role = null; lss('hd.role', null); closeSheet(); syncTracking(); render(); },
+  closeLegal() { S.legal = null; history.replaceState(null, '', pathFor(S.role, S.view)); render(); },
+  switchRole() { closeSheet(); S.role = 'customer'; S.view = { name: 'home' }; syncUrl(); syncTracking(); startRole(); },
+  toRole(b) { closeSheet(); S.role = b.dataset.v; S.view = { name: ROLE_HOME[S.role] }; syncUrl(); startRole(); },
+  async shareStore(b) {
+    const url = location.origin + '/store/' + encodeURIComponent(b.dataset.id);
+    const title = b.dataset.n + ' — الهدار درايف';
+    try {
+      if (navigator.share) { await navigator.share({ title, text: 'اطلب من ' + b.dataset.n + ' على الهدار درايف', url }); return; }
+      await navigator.clipboard.writeText(url); toast('تم نسخ رابط المتجر');
+    } catch (e) { if (e && e.name !== 'AbortError') toast(url); }
+  },
   logout() {
     const r = S.role; tokens.clear(r);
     S.customer = null; S.driver = null; S.adm = null; S.orders = []; S.authStep = 'phone'; S.authErr = '';
-    S.view = { name: { customer: 'home', driver: 'available', admin: 'aorders' }[r] };
+    S.view = { name: ROLE_HOME[r] }; syncUrl(true);
     syncTracking(); startRole();
   },
   async enablePush() { await enablePush(S.role, S.boot.vapidKey); lss('hd.pushAsked.' + S.role, true); toast('تم تفعيل الإشعارات 🔔'); render(); },
@@ -1167,12 +1197,14 @@ const ACT = {
     }, () => toast('ما قدرنا نحدد موقعك، تأكد من السماح بالوصول للموقع'), { enableHighAccuracy: true, timeout: 15000 });
   },
   storeMode(b) { S.storeChoice = b.dataset.v; render(); },
-  csPhoto() { const el = document.getElementById('csImgIn'); if (el) el.click(); },
+  csPhoto() {
+    if (!loggedIn()) { askLogin(null); return; } const el = document.getElementById('csImgIn'); if (el) el.click(); },
   csContinue(b) {
     const desc = (document.getElementById('cs_desc').value || '').trim();
     if (!desc) { toast('اكتب وصف طلبك'); return; }
     if (!(set().districts || []).length) { toast('التوصيل غير متاح حالياً'); return; }
     S.customOrder = Object.assign({}, S.customOrder, { desc, storeId: b.dataset.s });
+    if (!loggedIn()) { askLogin('custom'); return; }
     S.checkoutDraft = {}; S.checkoutCustom = true;
     openSheet({ type: 'checkout' });
   },
@@ -1190,6 +1222,7 @@ const ACT = {
   clearCart() { S.cart = { items: {} }; saveCart(); resetCheckout(); closeSheet(); render(); },
   async toCheckout() {
     if (!(set().districts || []).length) { toast('التوصيل غير متاح حالياً'); return; }
+    if (!loggedIn()) { askLogin('checkout'); return; }
     S.checkoutDraft = {}; S.checkoutCustom = false; S.quote = null;
     if (S.couponCode && !S.couponOk) S._tryCoupon = true;
     openSheet({ type: 'checkout' });
@@ -1292,7 +1325,12 @@ const ACT = {
     try {
       const r = await api('POST', '/api/auth/verify', { phone: S.authPhone, code, name });
       tokens.set('customer', r.token); S.authStep = 'phone'; S.authErr = ''; S.devCode = '';
+      const after = S.afterLogin; S.afterLogin = null;
+      if (S.view.name === 'login') { S.view = S.returnView || { name: 'home' }; S.returnView = null; syncUrl(true); }
       await startRole();
+      toast('أهلاً ' + (S.customer ? S.customer.name : '') + ' 👋');
+      if (after === 'checkout') ACT.toCheckout();
+      else if (after === 'custom') { S.checkoutDraft = {}; S.checkoutCustom = true; openSheet({ type: 'checkout' }); }
     } catch (err) { S.authErr = err.message; render(); }
   },
 
@@ -1458,6 +1496,15 @@ const ACT = {
   },
 };
 
+/* الزائر يطلب: نسجّل دخوله ثم نكمل من نفس المكان */
+function askLogin(after) {
+  closeSheet();
+  S.afterLogin = after; S.returnView = S.view.name === 'login' ? S.returnView : S.view;
+  S.authStep = 'phone'; S.authErr = '';
+  go('login');
+  if (after) toast('سجّل برقم جوالك عشان نكمل طلبك');
+}
+
 function tickResend() {
   clearInterval(tickResend._t);
   tickResend._t = setInterval(() => {
@@ -1507,24 +1554,24 @@ window.addEventListener('offline', () => { if (!document.querySelector('.offline
 
 /* ============ التشغيل ============ */
 (async function init() {
-  /* روابط مباشرة من الإشعارات: ?r=customer&o=<id>&chat=1 */
   const qs = new URLSearchParams(location.search);
   const lm = location.pathname.match(/^\/legal\/(\w+)/);
   if (lm) openLegal(lm[1], false);
+  /* روابط الإشعارات القديمة (?r=...) تتحول للروابط الجديدة */
   const r = qs.get('r');
-  if (['customer', 'driver', 'admin'].includes(r)) { S.role = r; lss('hd.role', r); }
-  if (S.role) S.view = { name: { customer: 'home', driver: 'available', admin: 'aorders' }[S.role] };
+  if (['customer', 'driver', 'admin'].includes(r)) S.role = r;
+  S.view = S.role === 'customer' ? viewFromPath(location.pathname) : { name: ROLE_HOME[S.role] };
   if (S.role === 'customer' && qs.get('o')) S.view = { name: 'order', arg: qs.get('o') };
   if (S.role === 'customer' && qs.get('v') === 'orders') S.view = { name: 'orders' };
   if (S.role === 'driver' && qs.get('chat')) S.view = { name: 'mine' };
-  if (qs.toString() && !lm) history.replaceState(null, '', '/');
+  if (!lm) syncUrl(true);
   render();
   registerSW();
   for (;;) {
     try { await loadBoot(); break; }
     catch { render(); await new Promise((res) => setTimeout(res, 3000)); }
   }
-  if (S.role) await startRole(); else render();
-  const chatId = qs.get('chat') === '1' ? qs.get('o') : qs.get('chat');
+  await startRole();
+  const chatId = qs.get('chat') === '1' ? (qs.get('o') || (S.view.name === 'order' && S.view.arg)) : qs.get('chat');
   if (chatId && loggedIn()) ACT.openChat({ dataset: { id: chatId } }).catch(() => {});
 })();
