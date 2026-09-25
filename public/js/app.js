@@ -719,6 +719,11 @@ function vSettings() {
     <div class="field pinrow"><label>رمز دخول جديد للإدارة</label><input id="st_pin" type="password" inputmode="numeric" maxlength="8" value="" placeholder="••••" autocomplete="new-password"><span class="hint">اتركه فاضي إذا ما تبي تغيّر الرمز. تغيير الرمز يسجّل خروج أي جهاز آخر.</span></div>
     <div class="field"><label>رمز استرجاع احتياطي (لو نسيت رمز الدخول)</label><input id="st_recovery" type="password" autocomplete="new-password" placeholder="${st.hasRecovery ? '•••••• (معدّ مسبقاً — اتركه فاضي إذا ما تبي تغيّره)' : 'مثال: عبارة أو رمز يصعب تخمينه'}"><span class="hint">${st.hasRecovery ? 'مفعّل. احفظه في مكان آمن.' : 'لسا ما عندك رمز استرجاع. لو نسيت رمز الدخول بدون هذا الرمز، بتحتاج إعادة ضبط من الخادم.'}</span></div>
     <button class="btn block" data-act="saveSettings">حفظ الإعدادات</button>
+    <h2>استيراد بيانات النسخة القديمة</h2>
+    <p class="hint" style="margin-top:0">ارفع ملف الحزمة (<b dir="ltr">alhadar-import.json</b>) لنقل المتاجر والمنتجات وصورها، والأحياء، وبيانات الحوالة، والكوبونات، والسائقين. <b>تنبيه:</b> رمز دخول الإدارة يصير نفس رمز النسخة القديمة بعد الاستيراد، وتحتاج تسجّل دخولك فيه من جديد.</p>
+    <button class="btn line block" data-act="importPick">📦 اختيار ملف البيانات</button>
+    <input type="file" id="importIn" accept="application/json,.json" hidden>
+    ${S._importLog ? `<div class="card" style="margin-top:10px">${S._importLog.map((l) => `<div class="ol">${esc(l)}</div>`).join('')}</div>` : ''}
     <div class="row" style="margin-top:14px"><button class="btn line block" data-act="logout">تسجيل الخروج</button></div>
   </div>`;
 }
@@ -996,7 +1001,23 @@ document.addEventListener('change', async (e) => {
   if (t.id === 'imgIn' && t.files && t.files[0]) uploadProductImg(t.files[0]);
   if (t.id === 'csImgIn' && t.files && t.files[0]) uploadCustomPhoto(t.files[0]);
   if (t.id === 'rcptIn' && t.files && t.files[0]) uploadReceipt(t.files[0]);
+  if (t.id === 'importIn' && t.files && t.files[0]) importData(t.files[0]);
 });
+async function importData(file) {
+  askConfirm('استيراد البيانات من "' + file.name + '"؟ المتاجر والإعدادات الحالية بتنستبدل ببيانات الملف.', async () => {
+    toast('جارِ الاستيراد…');
+    const fd = new FormData(); fd.append('file', file, file.name);
+    const r = await call('POST', '/api/admin/import', fd);
+    S._importLog = r.log.concat(['تم الاستيراد ✅']);
+    await loadBoot();
+    if (r.adminChanged) {
+      tokens.clear('admin'); S.adm = null;
+      toast('تم الاستيراد ✅ سجّل دخولك برمز الإدارة القديم');
+      S.view = { name: 'aorders' }; startRole(); return;
+    }
+    await loadRole(); render(); toast('تم الاستيراد ✅');
+  }, 'palm');
+}
 function patchLocalProduct(sid, pid, patch) {
   const s = S.adm && S.adm.stores.find((x) => x.id === sid); if (!s) return;
   s.products = s.products.map((p) => (p.id === pid ? Object.assign({}, p, patch) : p));
@@ -1208,6 +1229,7 @@ const ACT = {
     tokens.set('admin', r.token); S.view = { name: 'aorders' };
     await startRole();
   },
+  importPick() { const el = document.getElementById('importIn'); if (el) { el.value = ''; el.click(); } },
   forgotAdmin() { S.recover = {}; openSheet({ type: 'recover' }); },
   async recoverVerify(b) {
     const phrase = (document.getElementById('rc_phrase').value || '').trim();

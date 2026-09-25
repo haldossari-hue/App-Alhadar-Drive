@@ -12,6 +12,7 @@ import { sendSms } from './services/sms.js';
 import { paymentsProvider, createPayment, fetchPaymentStatus } from './services/payments.js';
 import { hashSecret, verifySecret, needsRehash, issueToken, readToken, TTL, rateLimit, randomId, randomDigits, signedFileUrl } from './auth.js';
 import { createOrderService, CheckoutError } from './orders.js';
+import { importBundle } from './importer.js';
 import {
   loadStores, loadStore, saveStore, getCoupon, couponRow, customerRow, driverRow, getOrder, orderRow, viewOrder,
 } from './repo.js';
@@ -507,6 +508,22 @@ export async function buildApp(opts = {}) {
     const out = { settings: adminSettings(), warnings };
     if (pin && !warnings.length) out.token = issueToken({ role: 'admin', sub: 'admin', v: a.v }, TTL.admin);
     return out;
+  });
+
+  /* استيراد بيانات النسخة القديمة (ملف حزمة JSON واحد) */
+  app.post('/api/admin/import', { preHandler: isAdmin }, async (req) => {
+    const file = await req.file({ limits: { fileSize: 30 * 1024 * 1024 } });
+    if (!file) throw httpError(400, 'اختر ملف البيانات');
+    const buf = await file.toBuffer();
+    if (file.file.truncated) throw httpError(400, 'الملف كبير، الحد الأقصى 30 ميجا');
+    let bundle;
+    try { bundle = JSON.parse(buf.toString('utf8')); } catch { throw httpError(400, 'الملف ليس بصيغة صحيحة'); }
+    let log;
+    try { log = importBundle(db, uploadsDir, bundle, { replace: req.query.replace === '1' }); }
+    catch (e) { req.log.warn(e); throw httpError(400, e.message || 'تعذر الاستيراد'); }
+    hub.all({ type: 'catalog' });
+    hub.admins({ type: 'drivers' });
+    return { log, adminChanged: log.some((l) => l.includes('رمز الإدارة منقول')) };
   });
 
   /* ============ المحادثة ============ */

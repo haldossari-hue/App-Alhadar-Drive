@@ -267,3 +267,35 @@ test('الترحيل: رموز النسخة القديمة (SHA-256) تشتغل 
   await ok(req('POST', '/api/admin/login', { pin: '4321' }));
   assert.match(app.db.kvGet('admin').pinHash, /^scrypt\$/);
 });
+
+test('استيراد حزمة النسخة القديمة من لوحة الإدارة (متاجر، صور، إعدادات، سائق، رمز إدارة)', async () => {
+  resetRateLimits();
+  admin = (await ok(req('POST', '/api/admin/login', { pin: '4321' }))).token; // الرمز من اختبار الترحيل السابق
+  const crypto = await import('node:crypto');
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const bundle = { format: 'alhadar-export-v1', collections: {
+    stores: [{ id: 'old1', name: 'مخبز الهدار', category: 'bakery', products: [{ id: 'p1', name: 'تميس', price: 2 }, { id: 'p2', name: 'صامولي', price: 0 }] }],
+    pimg: [{ id: 'old1', m: { p1: 'k', p2: 'k' }, d: { k: png } }],
+    settings: [{ id: 'app', deliveryFee: 13, districts: ['حي القيسيه'], adminPinHash: crypto.createHash('sha256').update('hd:7777').digest('hex') }],
+    drivers: [{ id: 'dold', name: 'سائق قديم', phone: '0566666666', pin: '3333' }],
+  } };
+  const boundary = 'IMPB';
+  const payload = Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="b.json"\r\nContent-Type: application/json\r\n\r\n`), Buffer.from(JSON.stringify(bundle)), Buffer.from(`\r\n--${boundary}--\r\n`)]);
+  const cust = await customer('0500000020');
+  const denied = await app.inject({ method: 'POST', url: '/api/admin/import', payload, headers: { authorization: 'Bearer ' + cust, 'content-type': `multipart/form-data; boundary=${boundary}` } });
+  assert.equal(denied.statusCode, 401, 'العميل ما يقدر يستورد');
+  const r = await app.inject({ method: 'POST', url: '/api/admin/import', payload, headers: { authorization: 'Bearer ' + admin, 'content-type': `multipart/form-data; boundary=${boundary}` } });
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.json().adminChanged, true);
+  const boot = await ok(req('GET', '/api/bootstrap'));
+  const s = boot.stores.find((x) => x.id === 'old1');
+  assert.equal(s.products.length, 2);
+  assert.equal(s.products[0].img, s.products[1].img, 'الصورة المكررة تُحفظ مرة وحدة');
+  assert.equal((await app.inject(s.products[0].img)).statusCode, 200);
+  assert.equal(boot.settings.deliveryFee, 13);
+  assert.equal((await req('GET', '/api/admin/data', null, admin)).status, 401, 'جلسة الإدارة تنتهي بعد نقل الرمز القديم');
+  admin = (await ok(req('POST', '/api/admin/login', { pin: '7777' }))).token;
+  await ok(req('POST', '/api/driver/login', { phone: '0566666666', pin: '3333' }));
+  const bad = await app.inject({ method: 'POST', url: '/api/admin/import', payload: payload.toString().replace('alhadar-export-v1', 'x'), headers: { authorization: 'Bearer ' + admin, 'content-type': `multipart/form-data; boundary=${boundary}` } });
+  assert.equal(bad.statusCode, 400);
+});
