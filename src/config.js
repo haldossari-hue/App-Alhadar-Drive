@@ -27,7 +27,9 @@ export const config = {
   /* مفتاح توقيع الجلسات — لازم يكون سري وطويل في الإنتاج */
   secret: env.APP_SECRET || (isProd ? null : 'dev-only-secret-change-me'),
   /* رمز الإدارة الأولي إذا ما فيه رمز محفوظ بالقاعدة */
-  initialAdminPin: env.INITIAL_ADMIN_PIN || '1234',
+  initialAdminPin: (env.INITIAL_ADMIN_PIN || '1234').trim(),
+  /* إعادة ضبط رمز الإدارة عند التشغيل (للطوارئ): ضعه، أعد النشر، ادخل، ثم احذفه */
+  adminResetPin: (env.ADMIN_RESET_PIN || '').trim(),
 
   sms: {
     provider: env.SMS_PROVIDER || 'console', // console | unifonic | taqnyat

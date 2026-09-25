@@ -67,6 +67,20 @@ export async function buildApp(opts = {}) {
     return a;
   }
 
+  if (config.adminResetPin && !opts.skipAdminReset) {
+    const pin = arabicDigits(config.adminResetPin);
+    if (/^\d{4,8}$/.test(pin)) {
+      const a = adminState();
+      /* نعيد الضبط مرة وحدة لكل قيمة، عشان إعادة التشغيل ما تلغي رمزاً غيّرته لاحقاً من الإعدادات */
+      const mark = crypto.createHash('sha256').update('reset:' + pin).digest('hex');
+      if (a.resetMark !== mark) {
+        db.kvSet('admin', { ...a, pinHash: hashSecret(pin), v: a.v + 1, resetMark: mark });
+        app.log.warn('تمت إعادة ضبط رمز الإدارة من ADMIN_RESET_PIN — احذف المتغير الآن');
+        console.log('تمت إعادة ضبط رمز الإدارة من ADMIN_RESET_PIN — احذف المتغير الآن');
+      }
+    } else console.log('ADMIN_RESET_PIN لازم يكون من 4 إلى 8 أرقام — تم تجاهله');
+  }
+
   app.decorateRequest('who', null);
   app.addHook('onRequest', async (req) => {
     const h = req.headers.authorization || '';

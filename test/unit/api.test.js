@@ -299,3 +299,22 @@ test('استيراد حزمة النسخة القديمة من لوحة الإد
   const bad = await app.inject({ method: 'POST', url: '/api/admin/import', payload: payload.toString().replace('alhadar-export-v1', 'x'), headers: { authorization: 'Bearer ' + admin, 'content-type': `multipart/form-data; boundary=${boundary}` } });
   assert.equal(bad.statusCode, 400);
 });
+
+test('إعادة ضبط رمز الإدارة من متغير البيئة ADMIN_RESET_PIN (مرة وحدة لكل قيمة)', async () => {
+  const { config } = await import('../../src/config.js');
+  const d2 = fs.mkdtempSync(path.join(os.tmpdir(), 'hd-rst-'));
+  config.adminResetPin = '٥٥٥٥';
+  try {
+    const a1 = await buildApp({ dataDir: d2, logger: false, push: fakePush });
+    assert.equal((await a1.inject({ method: 'POST', url: '/api/admin/login', payload: { pin: '5555' } })).statusCode, 200);
+    /* الإدارة غيّرت الرمز، ثم أعيد تشغيل الخادم والمتغير لسا موجود: ما يرجع الرمز القديم */
+    const tok = (await a1.inject({ method: 'POST', url: '/api/admin/login', payload: { pin: '5555' } })).json().token;
+    await a1.inject({ method: 'PUT', url: '/api/admin/settings', payload: { newPin: '8888' }, headers: { authorization: 'Bearer ' + tok } });
+    await a1.close();
+    resetRateLimits();
+    const a2 = await buildApp({ dataDir: d2, logger: false, push: fakePush });
+    assert.equal((await a2.inject({ method: 'POST', url: '/api/admin/login', payload: { pin: '8888' } })).statusCode, 200);
+    assert.equal((await a2.inject({ method: 'POST', url: '/api/admin/login', payload: { pin: '5555' } })).statusCode, 401);
+    await a2.close();
+  } finally { config.adminResetPin = ''; fs.rmSync(d2, { recursive: true, force: true }); }
+});
