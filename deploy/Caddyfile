@@ -1,0 +1,7 @@
+# غيّر النطاق لنطاقك، وتأكد إن سجل A يشير لعنوان الخادم
+alhadar.example.sa {
+	encode gzip
+	reverse_proxy app:3000 {
+		flush_interval -1
+	}
+}
