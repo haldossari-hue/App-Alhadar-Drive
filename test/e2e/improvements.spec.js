@@ -148,3 +148,41 @@ test('التحقق عبر واتساب الإدارة: العميل ينتظر،
     await expect(adm.locator('.otprow', { hasText: '0501110050' })).toHaveCount(0, { timeout: 10000 });
   } finally { await request.put('/api/admin/settings', { ...H, data: { verifyMode: 'sms' } }); }
 });
+
+test('وضع التجربة: الزائر يشوف كل المتاجر ويطلب بدون تسجيل، والطلب يظهر للإدارة كتجريبي', async ({ browser, request }) => {
+  const t = await adminToken(request);
+  const H = { headers: { Authorization: 'Bearer ' + t } };
+  await request.put('/api/admin/settings', { ...H, data: { trialMode: true } });
+  try {
+    const mk = async () => (await browser.newContext({ locale: 'ar-SA' })).newPage();
+    const [g, adm] = await Promise.all([mk(), mk()]);
+    await adm.goto('/admin');
+    await adm.locator('#ad_pin').fill('1234');
+    await adm.getByRole('button', { name: 'دخول' }).click();
+    await expect(adm.getByText('وضع التجربة مفعّل')).toBeVisible();
+
+    await g.goto('/');
+    await expect(g.locator('.trialbar')).toContainText('مرحلة التجربة');
+    await g.locator('.srow', { hasText: 'مطعم الوادي' }).click();
+    await g.locator('.pcard', { hasText: 'كبسة لحم' }).locator('.add').click();
+    await g.locator('.cartbar button').click();
+    await g.getByRole('button', { name: 'متابعة الطلب' }).click();
+    await expect(g.getByRole('heading', { name: 'تأكيد الطلب' })).toBeVisible(); // بدون تسجيل
+    await expect(g.locator('.sh')).not.toContainText('طريقة الدفع');
+    await g.locator('#co_name').fill('زائر يجرّب');
+    await g.locator('#co_phone').fill('0509090909');
+    await fillAddress(g);
+    await g.getByRole('button', { name: /أرسل الطلب التجريبي/ }).click();
+    await expect(g.locator('.card .trialbar')).toContainText('وصلنا طلبك التجريبي');
+    await expect(g.locator('.oh .pill')).toHaveText('طلب تجريبي');
+    const code = (await g.locator('.oh b').textContent()).match(/#(\d+)/)[1];
+
+    await expect(adm.locator('#toast')).toContainText('طلب تجريبي #' + code, { timeout: 10000 });
+    await adm.getByRole('button', { name: /تجريبية/ }).click();
+    await expect(adm.locator('.card', { hasText: '#' + code })).toContainText('زائر يجرّب');
+
+    // "طلباتي" للزائر محفوظة على جهازه
+    await g.locator('.nav [data-go="orders"]').click();
+    await expect(g.locator('.srow', { hasText: '#' + code })).toBeVisible();
+  } finally { await request.put('/api/admin/settings', { ...H, data: { trialMode: false } }); }
+});

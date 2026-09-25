@@ -1,5 +1,5 @@
 /* خدمة الطلبات: الإنشاء، تدفق الحالات، الولاء، الاسترجاع، والإشعارات */
-import { ACTIVE, ST, DRIVER_NEXT, claimableOrder, round2, storeOpenNow } from '../public/shared/constants.js';
+import { ACTIVE, ST, DRIVER_NEXT, claimableOrder, round2, storeOpenNow, normalizePhone } from '../public/shared/constants.js';
 import { buildBaskets, computeCheckout, validateForPlacement, loyaltyEarned, closedMsg, CheckoutError } from './domain/pricing.js';
 import { loadStore, getCoupon, getOrder, writeOrder, customerRow } from './repo.js';
 import { randomDigits, randomId } from './auth.js';
@@ -344,5 +344,54 @@ export function createOrderService({ db, hub, push, log }) {
     }
   }
 
-  return { quote, place, placeCustom, claim, driverAdvance, adminAssign, adminDeliver, cancel, markRefunded, setCustomPrice, settleDriver, markGroupPaid, markGroupFailed, markLatePaid, announce, mutate };
+  /* ============ وضع التجربة ============ */
+  /* getStore يرجّع المتجر باسمه المؤقت لو ما له اسم */
+  function trialQuote(body, getStore) {
+    const settings = db.settings();
+    const baskets = buildBaskets(body.items, getStore);
+    const code = String(body.coupon || '').trim().toUpperCase();
+    const coupon = code ? getCoupon(db, code) || { code, active: false } : null;
+    return { cx: computeCheckout({ baskets, settings, coupon }), settings };
+  }
+  function placeTrial(body, getStore) {
+    return db.tx(() => {
+      const settings = db.settings();
+      const cu = validateCustomer(body.customer || {}, settings);
+      const phone = normalizePhone(body.customer && body.customer.phone);
+      if (!phone) throw new CheckoutError('اكتب رقم جوال صحيح');
+      cu.phone = phone;
+      const t = now();
+      const group = newGroupCode();
+      const base = { groupCode: group, customer: cu, status: 'trial', isTrial: true, payment: 'cash', paymentStatus: 'trial', settled: true,
+        driverId: null, driverName: null, driverPhone: null, freeDeliveryUsed: false, createdAt: t, updatedAt: t, log: [{ s: 'trial', t }] };
+      let orders;
+      if (body.description) {
+        const desc = String(body.description).trim().slice(0, 1500);
+        const s = getStore(String(body.storeId || ''));
+        if (!s) throw new CheckoutError('المتجر غير موجود');
+        if (!storeOpenNow(s)) throw new CheckoutError(closedMsg(s), 'closed');
+        const fee = Math.max(0, Number(settings.deliveryFee) || 0);
+        orders = [{ ...base, id: randomId('o'), code: group, storeId: s.id, storeName: s.name, storeEmoji: s.emoji || '🏪', storeCategory: s.category, storePhone: '',
+          isCustom: true, priceStatus: 'pending', description: desc, items: [], subtotal: 0, discount: 0, coupon: null, fee, total: fee }];
+      } else {
+        const { cx } = trialQuote(body, getStore);
+        validateForPlacement(cx, settings);
+        if (body.coupon && !cx.couponOk) throw new CheckoutError(cx.couponMsg || 'الكود غير صحيح', 'coupon');
+        orders = cx.rows.map((r, idx) => ({
+          ...base, id: randomId('o'), code: group + (cx.rows.length > 1 ? String.fromCharCode(65 + idx) : ''),
+          storeId: r.bk.s.id, storeName: r.bk.s.name, storeEmoji: r.bk.s.emoji || '🏪', storeCategory: r.bk.s.category, storePhone: '',
+          items: r.bk.lines.map(({ p, q, u, price }) => ({ id: p.id, name: p.name, price, qty: q, unit: u ? u.label : (p.unit || '') })),
+          subtotal: r.bk.sub, discount: r.discount, coupon: r.coupon, fee: r.fee, total: r.total, isCustom: false, priceStatus: null,
+        }));
+      }
+      orders.forEach((o) => writeOrder(db, o));
+      return orders;
+    }).map((o) => { announceTrial(o); return o; });
+  }
+  function announceTrial(o) {
+    hub.admins({ type: 'order', id: o.id });
+    hub.admins({ type: 'notify', text: `🧪 طلب تجريبي #${o.code} — ${o.storeName}`, sound: false });
+  }
+
+  return { trialQuote, placeTrial, quote, place, placeCustom, claim, driverAdvance, adminAssign, adminDeliver, cancel, markRefunded, setCustomPrice, settleDriver, markGroupPaid, markGroupFailed, markLatePaid, announce, mutate };
 }

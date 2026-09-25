@@ -18,7 +18,7 @@ import { toCsv, parseCsv } from './csv.js';
 import {
   insertProduct, loadStores, loadStore, saveStore, getCoupon, couponRow, customerRow, driverRow, getOrder, orderRow, viewOrder,
 } from './repo.js';
-import { CAT, CATS, TINTS, UNIT_PRESETS, DRIVER_ACTIVE, claimableOrder, normalizePhone, arabicDigits, round2, validTime } from '../public/shared/constants.js';
+import { CAT, CATS, TINTS, UNIT_PRESETS, DRIVER_ACTIVE, claimableOrder, normalizePhone, arabicDigits, round2, validTime, withDisplayNames } from '../public/shared/constants.js';
 
 const httpError = (status, message, code) => Object.assign(new Error(message), { statusCode: status, code: code || 'error' });
 
@@ -114,6 +114,7 @@ export async function buildApp(opts = {}) {
       payments: { cash: true, bank: s.payments.bank !== false, online: onlinePay() },
       bankName: s.bankName, bankHolder: s.bankHolder, bankIban: s.bankIban, loyaltyOn: s.loyaltyOn, loyaltyEvery: s.loyaltyEvery,
       legalName: s.legalName || '', crNumber: s.crNumber || '', vatNumber: s.vatNumber || '',
+      trialMode: s.trialMode !== false,
     };
   }
   const legalTexts = () => ({ ...LEGAL_DEFAULTS, ...db.kvGet('legal', {}) });
@@ -125,10 +126,36 @@ export async function buildApp(opts = {}) {
   }
   app.get('/api/bootstrap', async () => ({
     settings: publicSettings(),
-    stores: loadStores(db, { namedOnly: true }),
+    stores: db.settings().trialMode !== false ? withDisplayNames(loadStores(db)) : loadStores(db, { namedOnly: true }),
     coupons: publicCoupons(),
     vapidKey: push.publicKey,
   }));
+
+  /* ============ وضع التجربة: طلب بدون تسجيل، ما يروح للسائقين ============ */
+  const trialOn = () => db.settings().trialMode !== false;
+  const trialStore = (id) => {
+    const all = withDisplayNames(loadStores(db));
+    return all.find((x) => x.id === id) || null;
+  };
+  const quoteOut = (cx) => ({
+    rows: cx.rows.map((r) => ({ storeId: r.bk.s.id, storeName: r.bk.s.name, sub: r.bk.sub, discount: r.discount, fee: r.fee, total: r.total, coupon: r.coupon, freeUsedHere: r.freeUsedHere })),
+    couponOk: cx.couponOk, couponMsg: cx.couponMsg,
+    grandSub: cx.grandSub, grandDiscount: cx.grandDiscount, grandFee: cx.grandFee, grandTotal: cx.grandTotal,
+  });
+  app.post('/api/trial/quote', async (req) => {
+    if (!trialOn()) throw httpError(400, 'وضع التجربة متوقف', 'trial_off');
+    return quoteOut(svc.trialQuote(req.body || {}, trialStore).cx);
+  });
+  app.post('/api/trial/orders', async (req) => {
+    if (!trialOn()) throw httpError(400, 'وضع التجربة متوقف، سجّل دخولك واطلب طلباً عادياً', 'trial_off');
+    limit('trial:' + req.ip, 15, 600e3);
+    return { orders: svc.placeTrial(req.body || {}, trialStore) };
+  });
+  app.delete('/api/admin/trial-orders', { preHandler: isAdmin }, async () => {
+    const r = db.run("DELETE FROM orders WHERE status = 'trial'");
+    hub.admins({ type: 'order' });
+    return { deleted: Number(r.changes) };
+  });
 
   /* صفحات السياسات (عامة بدون تسجيل دخول — تطلبها بوابات الدفع ونظام حماية البيانات) */
   app.get('/api/legal', async () => ({ ...legalTexts(), ...(({ legalName, crNumber, vatNumber, supportPhone }) => ({ legalName, crNumber, vatNumber, supportPhone }))(publicSettings()) }));
@@ -228,12 +255,7 @@ export async function buildApp(opts = {}) {
     db.all('SELECT * FROM orders WHERE customer_phone = ? ORDER BY created_at DESC LIMIT 100', req.who.sub).map(orderRow).map((o) => viewOrder(o, req.who, db)));
 
   app.post('/api/checkout/quote', { preHandler: isCustomer }, async (req) => {
-    const { cx } = svc.quote(req.who.sub, req.body || {});
-    return {
-      rows: cx.rows.map((r) => ({ storeId: r.bk.s.id, storeName: r.bk.s.name, sub: r.bk.sub, discount: r.discount, fee: r.fee, total: r.total, coupon: r.coupon, freeUsedHere: r.freeUsedHere })),
-      couponOk: cx.couponOk, couponMsg: cx.couponMsg,
-      grandSub: cx.grandSub, grandDiscount: cx.grandDiscount, grandFee: cx.grandFee, grandTotal: cx.grandTotal,
-    };
+    return quoteOut(svc.quote(req.who.sub, req.body || {}).cx);
   });
 
   app.post('/api/orders', { preHandler: isCustomer }, async (req) => {
@@ -567,6 +589,7 @@ export async function buildApp(opts = {}) {
     if (b.bankOn !== undefined) patch.payments = { ...cur.payments, cash: true, bank: !!b.bankOn };
     if (b.loyaltyOn !== undefined) patch.loyaltyOn = !!b.loyaltyOn;
     if (b.loyaltyEvery !== undefined) patch.loyaltyEvery = Math.max(2, Math.floor(Number(b.loyaltyEvery) || 5));
+    if (b.trialMode !== undefined) patch.trialMode = !!b.trialMode;
     if (b.verifyMode !== undefined) patch.verifyMode = b.verifyMode === 'whatsapp' ? 'whatsapp' : 'sms';
     if (b.alertAfterMin !== undefined) patch.alertAfterMin = Math.min(120, Math.max(0, Math.floor(Number(b.alertAfterMin) || 0)));
     for (const k of ['legalName', 'crNumber', 'vatNumber']) if (b[k] !== undefined) patch[k] = String(b[k]).trim().slice(0, 120);

@@ -24,6 +24,7 @@ export const ST = {
   onway: { t: 'في الطريق إليك', d: 'جهّز المبلغ كاش', c: 'on' },
   delivered: { t: 'تم التوصيل', d: 'بالعافية عليك', c: 'mute' },
   cancelled: { t: 'ملغي', d: 'تم إلغاء الطلب', c: 'off' },
+  trial: { t: 'طلب تجريبي', d: 'تجربة فقط، ما يتوصّل', c: 'mute' },
 };
 export const FLOW = ['new', 'accepted', 'assigned', 'picked', 'onway', 'delivered'];
 export const ACTIVE = ['new', 'accepted', 'assigned', 'picked', 'onway'];
@@ -67,6 +68,8 @@ export const DEFAULT_SETTINGS = {
   bankIban: '',
   loyaltyOn: true,
   loyaltyEvery: 5,
+  /* وضع التجربة: كل المتاجر ظاهرة، وأي زائر يطلب بدون تحقق، والطلبات ما تروح للسائقين */
+  trialMode: true,
 };
 
 export const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -107,3 +110,13 @@ export function fmtTime(t) {
   return `${h % 12 || 12}:${mm}${h < 12 ? 'ص' : 'م'}`;
 }
 export const hoursLabel = (s) => (validTime(s.openAt) && validTime(s.closeAt) && s.openAt !== s.closeAt ? `${fmtTime(s.openAt)} – ${fmtTime(s.closeAt)}` : (s.hours || ''));
+
+/* اسم مؤقت للمتاجر اللي ما تسمّت (يظهر في وضع التجربة فقط، وما ينحفظ) */
+export function withDisplayNames(stores) {
+  const n = {};
+  return stores.map((s) => {
+    if (String(s.name || '').trim()) return s;
+    n[s.category] = (n[s.category] || 0) + 1;
+    return { ...s, name: `${(CAT[s.category] || { name: 'متجر' }).name} — متجر ${n[s.category]}`, unnamed: true };
+  });
+}

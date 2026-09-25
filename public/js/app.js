@@ -43,7 +43,11 @@ function syncUrl(replace) {
   if (location.pathname === u) return;
   if (replace) history.replaceState(null, '', u); else history.pushState(null, '', u);
 }
-const needsLogin = (v) => ['orders', 'order', 'profile', 'login'].includes(v.name);
+/* وضع التجربة: أي زائر يطلب بدون تسجيل، والطلب ما يروح للسائقين */
+const trial = () => set().trialMode !== false;
+const needsLogin = (v) => (trial() ? ['profile', 'login'] : ['orders', 'order', 'profile', 'login']).includes(v.name);
+const trialOrders = () => lsg('hd.trialOrders', []);
+const myOrderList = () => [...trialOrders(), ...S.orders].sort((a, b) => b.createdAt - a.createdAt);
 const stores = () => (S.boot ? S.boot.stores : []);
 const named = () => stores().filter((s) => (s.name || '').trim());
 const sname = (s) => (s.name || '').trim() || ('متجر بدون اسم — ' + ((CAT[s.category] || {}).name || ''));
@@ -172,7 +176,7 @@ function topBar() {
   let extra = '';
   if (S.role === 'driver' && loggedIn() && S.driver) extra = `<button class="ib" data-act="drvOnline">${S.driver.online ? '🟢 متصل' : '⚪ غير متصل'}</button>`;
   const right = S.role === 'customer'
-    ? (loggedIn() ? '' : `<button class="ib" data-go="login">دخول</button>`)
+    ? (loggedIn() ? '' : trial() ? '<span class="pill warn">🧪 تجريبي</span>' : `<button class="ib" data-go="login">دخول</button>`)
     : `<button class="ib" data-act="switchRole" aria-label="المتجر">🛍️ المتجر</button>`;
   const sub = S.role === 'customer' ? 'توصيل داخل الهدار' : lab;
   return `<header class="top"><div class="in"><button class="brand" data-go="home" style="border:0;background:none;padding:0;text-align:right">${emblem(34)}<span class="bt"><b>الهدار درايف</b><small>${sub}</small></span></button><div class="sp"></div>${extra}${right}</div><div class="najdi"></div></header>`;
@@ -235,6 +239,8 @@ function nav() {
   let items = [];
   if (S.role === 'customer') {
     const act = S.orders.filter((o) => ACTIVE.includes(o.status) || o.status === 'awaiting_payment').length;
+    if (trial() && !loggedIn()) { items = [['home', '🏠', 'الرئيسية'], ['orders', '🧾', 'طلباتي']]; }
+    else
     items = [['home', '🏠', 'الرئيسية'], ['orders', '🧾', 'طلباتي', act], ['profile', '👤', loggedIn() ? 'بياناتي' : 'دخول']];
   } else if (S.role === 'driver') {
     items = [['available', '📦', 'متاحة', S.dOrders.available.length], ['mine', '🛵', 'طلباتي', S.dOrders.mine.length], ['done', '💵', 'المنجزة']];
@@ -276,6 +282,7 @@ function vHome() {
       ${skyline()}
     </section>
     ${pushBar()}
+    ${trial() ? `<div class="notice trialbar">🧪 <b>الهدار درايف في مرحلة التجربة.</b> تصفّح المتاجر، وجرّب تطلب إذا حاب. الطلبات تجريبية وما تتوصّل للحين، وما يحتاج تسجيل ولا دفع.</div>` : ''}
     ${st.announcement ? `<div class="notice">📣 ${esc(st.announcement)}</div>` : ''}
     ${promoStrip()}
     <div class="search"><input type="search" id="q" value="${esc(S.q)}" placeholder="ابحث عن متجر أو منتج" autocomplete="off"></div>
@@ -377,10 +384,10 @@ function customOrderForm(s) {
     <h3 style="margin-bottom:6px">اكتب طلبك</h3>
     <p class="muted" style="margin:0 0 10px">اشرح اللي تبيه بالتفصيل (الصنف، الكمية، أي تفضيلات)، والمتجر يحدد لك السعر قبل ما يتأكد الطلب.</p>
     <div class="field"><textarea id="cs_desc" placeholder="مثال: أبي 3 كيلو تمر سكري درجة أولى، وكيلو سمن بلدي" style="min-height:100px">${esc(co.desc || '')}</textarea></div>
-    <div class="field"><label>صورة توضيحية (اختياري)</label>
+    ${trial() && !loggedIn() ? '' : `<div class="field"><label>صورة توضيحية (اختياري)</label>
       ${co.img ? `<div class="pimg" style="width:110px;height:110px;border-radius:14px;margin-bottom:8px;overflow:hidden"><img src="${esc(co.img)}" style="width:100%;height:100%;object-fit:cover"></div>` : ''}
       <button class="btn sm line" type="button" data-act="csPhoto">${co.img ? 'تغيير الصورة' : '+ إضافة صورة'}</button>
-      <input type="file" id="csImgIn" accept="image/*" hidden></div>
+      <input type="file" id="csImgIn" accept="image/*" hidden></div>`}
     <button class="btn block" style="margin-top:10px" data-act="csContinue" data-s="${s.id}">متابعة الطلب</button>
   </div>`;
 }
@@ -417,7 +424,7 @@ function cartBar() {
   return `<div class="cartbar"><button data-act="openCart"><span><span class="n">${n}</span>عرض السلة${bs.length > 1 ? ' (متجرين)' : ''}</span><span>${fmt(sub)}</span></button></div>`;
 }
 function vMyOrders() {
-  const list = S.orders;
+  const list = myOrderList();
   return `<div class="wrap"><h2>طلباتي</h2>
     ${list.length ? list.map((o) => `<button class="srow" data-go="order" data-arg="${o.id}" style="margin-bottom:8px">
       <span class="tile">${esc(o.storeEmoji || '🧾')}</span>
@@ -427,11 +434,12 @@ function vMyOrders() {
   </div>`;
 }
 function vOrder(id) {
-  const o = S.orders.find((x) => x.id === id);
+  const o = myOrderList().find((x) => x.id === id);
   if (!o) return `<div class="wrap"><button class="back" data-go="orders">→ طلباتي</button><div class="empty">الطلب غير موجود.</div></div>`;
   const idx = FLOW.indexOf(o.status);
   let tl;
   if (o.status === 'cancelled') tl = `<ul class="tl"><li class="done">طلب جديد<small>${clock(o.createdAt)}</small></li><li class="cur">ملغي${o.cancelledBy === 'payment' ? ' (لم يكتمل الدفع)' : ''}<small>${clock(o.updatedAt)}</small></li></ul>`;
+  else if (o.status === 'trial') tl = `<div class="notice trialbar" style="margin-top:12px">🧪 <b>وصلنا طلبك التجريبي، شكراً لتجربتك!</b><br>هذا طلب تجربة وما راح يتوصّل. لما نبدأ التوصيل الفعلي، الطلبات بتوصلك وتتابع حالتها من هنا خطوة بخطوة.</div>`;
   else if (o.status === 'awaiting_payment') tl = `<div class="notice">💳 بانتظار إكمال الدفع الإلكتروني. لو ما اكتمل خلال 30 دقيقة يُلغى الطلب تلقائياً.</div><button class="btn block" style="margin-top:10px" data-act="resumePay" data-id="${o.id}">إكمال الدفع</button>`;
   else tl = `<ul class="tl">${FLOW.map((s, i) => { const lg = (o.log || []).find((l) => l.s === s); const d = s === 'onway' && o.payment !== 'cash' ? 'تم الدفع مسبقاً، الطلب في الطريق' : ST[s].d; return `<li class="${i < idx ? 'done' : i === idx ? 'cur' : ''}">${ST[s].t}<small>${lg ? clock(lg.t) : i === idx ? d : ''}</small></li>`; }).join('')}</ul>`;
   const tracking = ['picked', 'onway'].includes(o.status);
@@ -449,7 +457,7 @@ function vOrder(id) {
     <div class="card"><div class="ol">📍 ${esc(o.customer.district)}، ${esc(o.customer.address)}</div>${o.customer.notes ? `<div class="ol">📝 ${esc(o.customer.notes)}</div>` : ''}</div>
     ${set().supportPhone ? `<div class="acts" style="margin-bottom:10px"><a class="btn line sm" href="tel:${esc(set().supportPhone)}">📞 اتصال بالإدارة</a><a class="btn wa sm" href="${waLink(set().supportPhone)}" target="_blank" rel="noopener">واتساب الإدارة</a></div>` : ''}
     ${o.refundDue ? `<div class="notice">💸 مبلغ ${fmt(o.refundDue)} مستحق لك، وبنرجعه لنفس وسيلة الدفع خلال أيام عمل.</div>` : o.refundedAt ? `<div class="notice">✅ تم استرجاع ${fmt(o.refundedAmount)}</div>` : ''}
-    ${['delivered', 'cancelled'].includes(o.status) && !o.isCustom && (o.items || []).length ? `<button class="btn gold block" style="margin-bottom:8px" data-act="reorder" data-id="${o.id}">🔁 اطلب نفس الطلب مرة ثانية</button>` : ''}
+    ${['delivered', 'cancelled', 'trial'].includes(o.status) && !o.isCustom && (o.items || []).length ? `<button class="btn gold block" style="margin-bottom:8px" data-act="reorder" data-id="${o.id}">🔁 اطلب نفس الطلب مرة ثانية</button>` : ''}
     ${['new', 'awaiting_payment'].includes(o.status) ? `<button class="btn red block" data-act="custCancel" data-id="${o.id}">إلغاء الطلب</button>` : ''}
   </div>`;
 }
@@ -616,11 +624,11 @@ function vAdmin() {
 }
 function vAOrders() {
   const O = S.adm.orders; const t0 = today0();
-  const td = O.filter((o) => o.createdAt >= t0 && o.status !== 'awaiting_payment');
+  const td = O.filter((o) => o.createdAt >= t0 && !['awaiting_payment', 'trial'].includes(o.status));
   const del = td.filter((o) => o.status === 'delivered');
   const active = O.filter((o) => ACTIVE.includes(o.status));
   const f = S.orderFilter;
-  const fl = { active: ['النشطة', (o) => ACTIVE.includes(o.status)], new: ['الجديدة', (o) => o.status === 'new'], delivered: ['المكتملة', (o) => o.status === 'delivered'], cancelled: ['الملغاة', (o) => o.status === 'cancelled'], refund: ['استرجاع 💸', (o) => !!o.refundDue], all: ['الكل', (o) => o.status !== 'awaiting_payment'] };
+  const fl = { active: ['النشطة', (o) => ACTIVE.includes(o.status)], new: ['الجديدة', (o) => o.status === 'new'], delivered: ['المكتملة', (o) => o.status === 'delivered'], cancelled: ['الملغاة', (o) => o.status === 'cancelled'], refund: ['استرجاع 💸', (o) => !!o.refundDue], trial: ['تجريبية 🧪', (o) => o.status === 'trial'], all: ['الكل', (o) => !['awaiting_payment', 'trial'].includes(o.status)] };
   const list = O.filter(fl[f][1]);
   return `<div class="wrap wide">
     ${pushBar()}
@@ -631,8 +639,10 @@ function vAOrders() {
       <div class="stat"><b>${fmt(S.adm.cashWithDrivers)}</b><small>كاش لدى السائقين</small></div>
     </div>
     ${otpCard()}
+    ${set().trialMode !== false || S.adm.settings.trialMode !== false ? `<div class="notice trialbar" style="margin-top:14px">🧪 <b>وضع التجربة مفعّل:</b> أي زائر يطلب بدون تسجيل، والطلبات تظهر في فلتر "تجريبية" وما تروح للسائقين. أطفئه من الإعدادات وقت الإطلاق الفعلي.</div>` : ''}
     <h2>الطلبات</h2>
-    <div class="chips">${Object.entries(fl).filter(([k, [, fn]]) => k !== 'refund' || O.some(fn)).map(([k, [t, fn]]) => `<button class="chip ${k === f ? 'on' : ''}" data-act="ofilter" data-v="${k}">${t} (${O.filter(fn).length})</button>`).join('')}</div>
+    <div class="chips">${Object.entries(fl).filter(([k, [, fn]]) => !['refund', 'trial'].includes(k) || O.some(fn)).map(([k, [t, fn]]) => `<button class="chip ${k === f ? 'on' : ''}" data-act="ofilter" data-v="${k}">${t} (${O.filter(fn).length})</button>`).join('')}</div>
+    ${f === 'trial' && list.length ? `<button class="btn sm red" style="margin-bottom:10px" data-act="clearTrial">🗑️ مسح كل الطلبات التجريبية (${list.length})</button>` : ''}
     ${list.length ? list.map(aOrder).join('') : `<div class="empty"><span class="e">🧾</span>لا توجد طلبات هنا.</div>`}
   </div>`;
 }
@@ -766,6 +776,8 @@ function vSettings() {
     <div class="field"><label>أحياء الهدار المتاحة للتوصيل</label><textarea id="st_districts" style="min-height:130px">${esc((st.districts || []).join('\n'))}</textarea><span class="hint">كل حي في سطر. العميل لا يقدر يطلب إلا لحي من هذه القائمة.</span></div>
     <div class="field"><label>رقم تواصل الإدارة (يظهر للعملاء)</label><input id="st_support" dir="ltr" inputmode="tel" value="${esc(st.supportPhone || '')}" placeholder="05xxxxxxxx"></div>
     <div class="field"><label>إعلان يظهر للعملاء (اختياري)</label><input id="st_ann" value="${esc(st.announcement || '')}" placeholder="مثال: التوصيل مجاني يوم الجمعة"></div>
+    <label class="row" style="margin:6px 0 4px"><span class="sw"><input type="checkbox" id="st_trial" ${st.trialMode !== false ? 'checked' : ''}><span></span></span> <b>🧪 وضع التجربة</b></label>
+    <p class="hint" style="margin:0 0 12px">مفعّل: كل المتاجر ظاهرة (حتى اللي بدون اسم)، وأي زائر يطلب بدون تسجيل ولا دفع، والطلبات ما تروح للسائقين. أطفئه وقت الإطلاق الفعلي.</p>
     <div class="field"><label>طريقة التحقق من جوال العميل</label>
       <select id="st_verify"><option value="whatsapp" ${st.verifyModeActive === 'whatsapp' ? 'selected' : ''}>واتساب الإدارة (أنت ترسل الرمز يدوياً)</option><option value="sms" ${st.verifyModeActive === 'sms' ? 'selected' : ''} ${st.smsReady ? '' : 'disabled'}>رسالة نصية تلقائية${st.smsReady ? '' : ' — يحتاج تفعيل مزوّد الرسائل'}</option></select>
       <span class="hint">${st.smsReady ? 'مزوّد الرسائل مفعّل.' : 'مزوّد الرسائل (Unifonic أو Taqnyat) مو مفعّل للحين، فالتحقق يتم عن طريق واتساب الإدارة تلقائياً.'} المستخدم يسجّل مرة وحدة كل 90 يوم.</span></div>
@@ -885,7 +897,8 @@ function addressFields(cust, withNotes) {
   const d = S.checkoutDraft || {};
   const val = (k, def) => (d[k] !== undefined ? d[k] : def || '');
   return `<div class="field"><label>الاسم</label><input id="co_name" value="${esc(val('co_name', cust.name))}" autocomplete="name"></div>
-    <div class="field"><label>رقم الجوال</label><input value="${esc(cust.phone || '')}" disabled dir="ltr"></div>
+    ${cust.phone ? `<div class="field"><label>رقم الجوال</label><input value="${esc(cust.phone)}" disabled dir="ltr"></div>`
+      : `<div class="field"><label>رقم الجوال</label><input id="co_phone" inputmode="tel" dir="ltr" placeholder="05xxxxxxxx" value="${esc(val('co_phone', lsg('hd.trialPhone', '')))}"></div>`}
     <div class="field"><label>الحي</label><select id="co_district">${districtOpts(val('co_district', cust.district))}</select></div>
     <div class="field"><label>وصف العنوان</label><textarea id="co_address" placeholder="الشارع، لون الباب، أقرب معلم">${esc(val('co_address', cust.address))}</textarea></div>
     <div class="field"><label>رابط الموقع (اختياري)</label><input id="co_map" dir="ltr" value="${esc(val('co_map', cust.map))}" placeholder="رابط خرائط جوجل">
@@ -906,14 +919,15 @@ function shCheckout() {
   return shHead('تأكيد الطلب') + `
     <div class="zone" style="margin:0 0 14px">📍 التوصيل داخل الهدار فقط · من ${esc(storesLine)} · 🕒 ${etaMax} دقيقة تقريباً</div>
     ${baskets.length > 1 ? `<div class="notice">طلبك بيصير طلبين منفصلين (وحد لكل متجر)، كل وحد برسوم توصيل خاصة فيه، ويوصلونك بشكل منفصل.</div>` : ''}
-    ${addressFields(cust, true)}
+    ${trial() ? `<div class="notice trialbar">🧪 <b>طلب تجريبي:</b> ما فيه دفع ولا توصيل. جرّب الخطوات بالكامل، ونشكر لك تجربتك.</div>` : ''}
+    ${addressFields(trial() && !loggedIn() ? { name: lsg('hd.trialName', '') } : cust, true)}
     <div class="field"><label>كود الخصم (اختياري)</label>
       <div class="couponrow"><input id="co_coupon" value="${esc(S.couponCode || '')}" dir="ltr" placeholder="مثال: HADAR10">
       <button class="btn sm dark" type="button" data-act="applyCoupon">تطبيق</button></div>
       ${S.couponMsg ? `<div class="hint" id="couponMsg" style="color:${S.couponOk ? 'var(--palm)' : 'var(--danger)'}">${esc(S.couponMsg)}</div>` : ''}
     </div>
-    ${freeAvail > 0 ? `<label class="row" style="margin:0 0 12px"><span class="sw"><input type="checkbox" id="co_free" ${S.useFreeDelivery ? 'checked' : ''}><span></span></span> استخدم توصيلة مجانية (متبقي ${freeAvail})</label>` : ''}
-    <h3 style="margin:16px 0 10px">طريقة الدفع</h3>
+    ${!trial() && freeAvail > 0 ? `<label class="row" style="margin:0 0 12px"><span class="sw"><input type="checkbox" id="co_free" ${S.useFreeDelivery ? 'checked' : ''}><span></span></span> استخدم توصيلة مجانية (متبقي ${freeAvail})</label>` : ''}
+    ${trial() ? '' : `<h3 style="margin:16px 0 10px">طريقة الدفع</h3>
     <div class="payopts">
       <button type="button" class="pay ${pay === 'cash' ? 'sel' : ''}" data-act="pickPay" data-v="cash"><span class="pe2">💵</span><b>كاش عند الاستلام</b>${pay === 'cash' ? '<span class="pill on">✓</span>' : ''}</button>
       ${bankOn ? `<button type="button" class="pay ${pay === 'bank' ? 'sel' : ''}" data-act="pickPay" data-v="bank"><span class="pe2">🏦</span><b>حوالة بنكية</b>${pay === 'bank' ? '<span class="pill on">✓</span>' : ''}</button>` : ''}
@@ -929,14 +943,14 @@ function shCheckout() {
         : `<button type="button" class="btn sm dark" data-act="rcptUpload">📎 إرفاق إثبات التحويل</button>`}
       <input type="file" id="rcptIn" accept="image/*,application/pdf" hidden>
     </div>` : ''}
-    ${pay === 'online' ? `<p class="hint" style="margin-top:8px">بعد إرسال الطلب تنتقل لصفحة الدفع الآمنة، والطلب يوصل للسائقين بعد تأكيد الدفع.</p>` : ''}
+    ${pay === 'online' ? `<p class="hint" style="margin-top:8px">بعد إرسال الطلب تنتقل لصفحة الدفع الآمنة، والطلب يوصل للسائقين بعد تأكيد الدفع.</p>` : ''}`}
     <div class="card" style="margin-top:12px" id="coTotals">
       ${!qx ? '<div class="muted">جارِ حساب المجموع…</div>' : `
       ${qx.rows.length > 1 ? qx.rows.map((r) => `<div class="tot"><span>${esc(r.storeName)}</span><span>${fmt(r.total)}</span></div>`).join('') : ''}
       ${totalsX({ subtotal: qx.grandSub, discount: qx.grandDiscount, code: S.couponOk ? S.couponCode : null, fee: qx.grandFee, total: qx.grandTotal })}`}
     </div>
     <p class="hint" style="text-align:center">بإرسال الطلب أنت توافق على <a href="/legal/terms" data-legal="terms">الشروط</a> و<a href="/legal/refund" data-legal="refund">سياسة الاسترجاع</a></p>
-    <button class="btn block" data-act="placeOrder" ${qx ? '' : 'disabled'}>${pay === 'bank' ? `أرسل الطلب — ${fmt(total)} حوالة` : pay === 'online' ? `متابعة للدفع — ${fmt(total)}` : `أرسل الطلب — ${fmt(total)} كاش`}</button>`;
+    <button class="btn block" data-act="placeOrder" ${qx ? '' : 'disabled'}>${trial() ? `🧪 أرسل الطلب التجريبي — ${fmt(total)}` : pay === 'bank' ? `أرسل الطلب — ${fmt(total)} حوالة` : pay === 'online' ? `متابعة للدفع — ${fmt(total)}` : `أرسل الطلب — ${fmt(total)} كاش`}</button>`;
 }
 function shCheckoutCustom() {
   const cust = S.customer || {}; const st = set(); const co = S.customOrder || {};
@@ -948,11 +962,12 @@ function shCheckoutCustom() {
   return shHead('طلب خاص') + `
     <div class="zone" style="margin:0 0 14px">✍️ من ${esc(s ? s.name : '')} · سيحدد المتجر السعر قبل التأكيد</div>
     <div class="notice" style="margin-bottom:14px">${esc(co.desc || '')}${co.img ? `<br><img src="${esc(co.img)}" style="width:100%;max-width:200px;border-radius:12px;margin-top:8px">` : ''}</div>
-    ${addressFields(cust, false)}
-    ${freeAvail > 0 ? `<label class="row" style="margin:0 0 12px"><span class="sw"><input type="checkbox" id="co_free" ${useFree ? 'checked' : ''}><span></span></span> استخدم توصيلة مجانية (متبقي ${freeAvail})</label>` : ''}
+    ${trial() ? `<div class="notice trialbar">🧪 <b>طلب تجريبي:</b> ما فيه دفع ولا توصيل.</div>` : ''}
+    ${addressFields(trial() && !loggedIn() ? { name: lsg('hd.trialName', '') } : cust, false)}
+    ${!trial() && freeAvail > 0 ? `<label class="row" style="margin:0 0 12px"><span class="sw"><input type="checkbox" id="co_free" ${useFree ? 'checked' : ''}><span></span></span> استخدم توصيلة مجانية (متبقي ${freeAvail})</label>` : ''}
     <div class="card"><div class="tot"><span>رسوم التوصيل</span><span>${fee > 0 ? fmt(fee) : 'مجاني'}</span></div></div>
     <p class="hint" style="margin-top:8px">سعر المنتجات يحدده المتجر بعد مراجعة طلبك، والدفع كاش عند الاستلام. راح يوصلك المجموع النهائي على صفحة الطلب.</p>
-    <button class="btn block" style="margin-top:10px" data-act="placeCustomOrder">إرسال الطلب للمتجر</button>`;
+    <button class="btn block" style="margin-top:10px" data-act="placeCustomOrder">${trial() ? '🧪 أرسل الطلب التجريبي' : 'إرسال الطلب للمتجر'}</button>`;
 }
 function shStore() {
   const e = S.edit;
@@ -1128,9 +1143,10 @@ function patchLocalProduct(sid, pid, patch) {
 async function refreshQuote() {
   if (!S.sheet || S.sheet.type !== 'checkout' || S.checkoutCustom) { renderSheet(); return; }
   try {
-    const q = await call('POST', '/api/checkout/quote', { items: cartLines(), coupon: S.couponOk || S._tryCoupon ? S.couponCode : '', useFree: S.useFreeDelivery });
+    const url = trial() ? '/api/trial/quote' : '/api/checkout/quote';
+    const q = await call('POST', url, { items: cartLines(), coupon: S.couponOk || S._tryCoupon ? S.couponCode : '', useFree: S.useFreeDelivery });
     S.quote = q;
-    if (S._tryCoupon) { S.couponOk = q.couponOk; S.couponMsg = q.couponMsg; S._tryCoupon = false; if (!q.couponOk) { S.quote = await call('POST', '/api/checkout/quote', { items: cartLines(), coupon: '', useFree: S.useFreeDelivery }); } }
+    if (S._tryCoupon) { S.couponOk = q.couponOk; S.couponMsg = q.couponMsg; S._tryCoupon = false; if (!q.couponOk) { S.quote = await call('POST', url, { items: cartLines(), coupon: '', useFree: S.useFreeDelivery }); } }
   } catch (err) { toast(err.message); }
   renderSheet();
 }
@@ -1140,7 +1156,7 @@ function resetCheckout() {
 }
 function draftCustomer() {
   const v = (id) => ((document.getElementById(id) || {}).value || '').trim();
-  const d = { name: v('co_name'), district: v('co_district'), address: v('co_address'), map: v('co_map'), notes: v('co_notes') };
+  const d = { name: v('co_name'), district: v('co_district'), address: v('co_address'), map: v('co_map'), notes: v('co_notes'), phone: v('co_phone') || (S.customer && S.customer.phone) || '' };
   if (S._loc) { d.lat = S._loc.lat; d.lng = S._loc.lng; }
   return d;
 }
@@ -1223,13 +1239,18 @@ const ACT = {
     if (!desc) { toast('اكتب وصف طلبك'); return; }
     if (!(set().districts || []).length) { toast('التوصيل غير متاح حالياً'); return; }
     S.customOrder = Object.assign({}, S.customOrder, { desc, storeId: b.dataset.s });
-    if (!loggedIn()) { askLogin('custom'); return; }
+    if (!loggedIn() && !trial()) { askLogin('custom'); return; }
     S.checkoutDraft = {}; S.checkoutCustom = true;
     openSheet({ type: 'checkout' });
   },
   async placeCustomOrder(b) {
     const co = S.customOrder || {};
     b.disabled = true;
+    if (trial()) {
+      const r = await call('POST', '/api/trial/orders', { storeId: co.storeId, description: co.desc, customer: draftCustomer() });
+      S.customOrder = {}; S.storeChoice = 'list';
+      return trialPlaced(r.orders);
+    }
     const o = await call('POST', '/api/orders/custom', { storeId: co.storeId, description: co.desc, imageId: co.imgId || null, customer: draftCustomer(), useFree: S.useFreeDelivery });
     S.customOrder = {}; S.storeChoice = 'list'; resetCheckout();
     await loadRole();
@@ -1241,7 +1262,7 @@ const ACT = {
   clearCart() { S.cart = { items: {} }; saveCart(); resetCheckout(); closeSheet(); render(); },
   async toCheckout() {
     if (!(set().districts || []).length) { toast('التوصيل غير متاح حالياً'); return; }
-    if (!loggedIn()) { askLogin('checkout'); return; }
+    if (!loggedIn() && !trial()) { askLogin('checkout'); return; }
     S.checkoutDraft = {}; S.checkoutCustom = false; S.quote = null;
     if (S.couponCode && !S.couponOk) S._tryCoupon = true;
     openSheet({ type: 'checkout' });
@@ -1255,6 +1276,12 @@ const ACT = {
   },
   async placeOrder(b) {
     const st = set();
+    if (trial()) {
+      b.disabled = true;
+      const r = await call('POST', '/api/trial/orders', { items: cartLines(), coupon: S.couponOk ? S.couponCode : '', customer: draftCustomer() });
+      S.cart = { items: {} }; saveCart();
+      return trialPlaced(r.orders);
+    }
     const pay = S.payMethod === 'bank' && st.payments.bank !== false ? 'bank' : S.payMethod === 'online' && st.payments.online ? 'online' : 'cash';
     if (pay === 'bank' && !S.checkoutReceipt) { toast('أرفق صورة أو PDF لإثبات التحويل قبل إرسال الطلب'); return; }
     b.disabled = true;
@@ -1282,7 +1309,7 @@ const ACT = {
     catch (err) { toast(err.message); await loadRole(); render(); }
   },
   reorder(b) {
-    const o = S.orders.find((x) => x.id === b.dataset.id); if (!o) return;
+    const o = myOrderList().find((x) => x.id === b.dataset.id); if (!o) return;
     const s = stores().find((x) => x.id === o.storeId);
     if (!s) { toast('المتجر غير متاح حالياً'); return; }
     const others = cartStoreIds().filter((id) => id !== s.id);
@@ -1305,6 +1332,9 @@ const ACT = {
     toast(missing ? `انضاف ${added} منتج للسلة، و${missing} ما عاد متوفر` : 'انضاف طلبك للسلة ✅');
     go('store', s.id);
     if (storeOpenNow(s)) openSheet({ type: 'cart' });
+  },
+  clearTrial() {
+    askConfirm('مسح كل الطلبات التجريبية نهائياً؟', async () => { const r = await call('DELETE', '/api/admin/trial-orders'); toast(`تم مسح ${r.deleted} طلب تجريبي`); await loadRole(); render(); });
   },
   sendOtpWa(b) {
     const phone = b.dataset.p, code = b.dataset.c;
@@ -1510,7 +1540,7 @@ const ACT = {
       deliveryFee: v('st_fee'), minOrder: v('st_min'), supportPhone: v('st_support'), districts: v('st_districts'), announcement: v('st_ann'),
       bankName: v('st_bankname'), bankHolder: v('st_bankholder'), bankIban: v('st_bankiban'), bankOn: document.getElementById('st_bankon').checked,
       newPin: v('st_pin').trim(), recovery: v('st_recovery').trim(),
-      alertAfterMin: v('st_alert'), verifyMode: v('st_verify'), legalName: v('st_legal'), crNumber: v('st_cr'), vatNumber: v('st_vat'),
+      alertAfterMin: v('st_alert'), verifyMode: v('st_verify'), trialMode: document.getElementById('st_trial').checked, legalName: v('st_legal'), crNumber: v('st_cr'), vatNumber: v('st_vat'),
       legal: { terms: v('lg_terms'), privacy: v('lg_privacy'), refund: v('lg_refund') },
     });
     S.legalData = null;
@@ -1521,6 +1551,16 @@ const ACT = {
     render();
   },
 };
+
+/* الطلب التجريبي ينحفظ في جهاز الزائر عشان يشوفه في "طلباتي" */
+function trialPlaced(orders) {
+  const d = draftCustomer();
+  lss('hd.trialPhone', d.phone); lss('hd.trialName', d.name);
+  lss('hd.trialOrders', [...orders, ...trialOrders()].slice(0, 30));
+  resetCheckout(); closeSheet();
+  toast('🧪 وصلنا طلبك التجريبي، شكراً لتجربتك!');
+  if (orders.length > 1) go('orders'); else go('order', orders[0].id);
+}
 
 /* الزائر يطلب: نسجّل دخوله ثم نكمل من نفس المكان */
 function askLogin(after) {

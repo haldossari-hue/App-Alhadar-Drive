@@ -1,9 +1,12 @@
 import { expect } from '@playwright/test';
 
+/* نعيد استخدام جلسة الإدارة (الدخول محدود بـ10 محاولات كل 15 دقيقة للحماية) */
+let cachedAdmin = null;
 export async function adminToken(request, pin = '1234') {
+  if (cachedAdmin) return cachedAdmin;
   const r = await request.post('/api/admin/login', { data: { pin } });
   expect(r.ok()).toBeTruthy();
-  return (await r.json()).token;
+  return (cachedAdmin = (await r.json()).token);
 }
 const auth = (t) => ({ headers: { Authorization: 'Bearer ' + t } });
 
@@ -12,7 +15,7 @@ export async function seed(request) {
   const t = await adminToken(request);
   const data = await (await request.get('/api/admin/data', auth(t))).json();
   if (data.stores.some((s) => s.name === 'مطعم الوادي')) return { t, data };
-  await request.put('/api/admin/settings', { ...auth(t), data: { deliveryFee: 10, districts: 'حي الطرف\nحي البرقه', supportPhone: '0500112653', bankName: 'الراجحي', bankHolder: 'مؤسسة تجريبية', bankIban: 'SA0000000000000000000000', loyaltyEvery: 2 } });
+  await request.put('/api/admin/settings', { ...auth(t), data: { trialMode: false, deliveryFee: 10, districts: 'حي الطرف\nحي البرقه', supportPhone: '0500112653', bankName: 'الراجحي', bankHolder: 'مؤسسة تجريبية', bankIban: 'SA0000000000000000000000', loyaltyEvery: 2 } });
   await request.put('/api/admin/stores/new', { ...auth(t), data: { name: 'مطعم الوادي', category: 'restaurants', eta: 25, products: [
     { id: 'k', name: 'كبسة لحم', price: 35, sec: 'الأطباق', emoji: '🍛' },
     { id: 'j', name: 'جريش', price: 0, sec: 'الأطباق', emoji: '🥣' },

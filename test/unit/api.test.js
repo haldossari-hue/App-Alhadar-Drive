@@ -509,3 +509,40 @@ test('التحقق عبر واتساب الإدارة: الرمز ما ينرس�
     assert.equal(st.verifyModeActive, 'whatsapp');
   } finally { await ok(req('PUT', '/api/admin/settings', { verifyMode: 'sms' }, admin)); }
 });
+
+test('وضع التجربة: كل المتاجر ظاهرة، الزائر يطلب بدون تسجيل، والطلب ما يروح للسائقين ولا ينحسب', async () => {
+  await freshAdmin();
+  await ok(req('PUT', '/api/admin/settings', { trialMode: true }, admin));
+  try {
+    const unnamed = await ok(req('PUT', '/api/admin/stores/new', { name: 'مؤقت', category: 'grocery', products: [{ id: 'w', name: 'ماء', price: 5 }, { id: 'q', name: 'بدون سعر', price: 0 }] }, admin));
+    await ok(req('PATCH', '/api/admin/stores/' + unnamed.id, { name: '' }, admin));
+    const boot = await ok(req('GET', '/api/bootstrap'));
+    assert.equal(boot.settings.trialMode, true);
+    const shown = boot.stores.find((x) => x.id === unnamed.id);
+    assert.ok(shown, 'المتجر بدون اسم ظاهر');
+    assert.match(shown.name, /^بقالات — متجر \d+$/);
+
+    const items = [{ storeId: unnamed.id, productId: 'w', qty: 3 }, { storeId: unnamed.id, productId: 'q', qty: 1 }];
+    const q = await ok(req('POST', '/api/trial/quote', { items }));
+    assert.equal(q.grandTotal, 15 + 10, 'المنتج بدون سعر ما ينحسب');
+    const bad = await req('POST', '/api/trial/orders', { items, customer: { ...addr, phone: '123' } });
+    assert.match(bad.body.error, /جوال/);
+    const r = await ok(req('POST', '/api/trial/orders', { items, customer: { ...addr, phone: '0599999999' } }));
+    const o = r.orders[0];
+    assert.equal(o.status, 'trial');
+    assert.equal(o.storeName, shown.name);
+    const custom = await ok(req('POST', '/api/trial/orders', { storeId: app.s1, description: 'تجربة طلب خاص', customer: { ...addr, phone: '0599999999' } }));
+    assert.equal(custom.orders[0].isCustom, true);
+
+    const dt = (await ok(req('POST', '/api/driver/login', { phone: '0555555551', pin: '1111' }))).token;
+    const d = await ok(req('GET', '/api/driver/orders', null, dt));
+    assert.ok(!d.available.some((x) => x.id === o.id), 'ما يروح للسائقين');
+    assert.equal((await req('POST', `/api/driver/orders/${o.id}/claim`, {}, dt)).status, 409);
+    const adm = await ok(req('GET', '/api/admin/data', null, admin));
+    assert.ok(adm.orders.some((x) => x.id === o.id && x.status === 'trial'), 'يظهر للإدارة');
+    const del = await ok(req('DELETE', '/api/admin/trial-orders', null, admin));
+    assert.ok(del.deleted >= 2);
+  } finally { await ok(req('PUT', '/api/admin/settings', { trialMode: false }, admin)); }
+  assert.equal((await req('POST', '/api/trial/orders', { items: [], customer: addr })).body.code, 'trial_off', 'يتوقف لما ينطفي الوضع');
+  assert.ok(!(await ok(req('GET', '/api/bootstrap'))).stores.some((x) => !x.name), 'بعد الإيقاف المتاجر بدون اسم تختفي');
+});
