@@ -1,6 +1,6 @@
 /* Service Worker: تشغيل سريع للواجهة + استقبال إشعارات Push */
-const CACHE = 'hd-shell-v1';
-const SHELL = ['/', '/app.css', '/js/app.js', '/js/api.js', '/js/util.js', '/shared/constants.js', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png'];
+const CACHE = 'hd-shell-v2';
+const SHELL = ['/', '/app.css', '/js/app.js', '/js/api.js', '/js/util.js', '/shared/constants.js', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png', '/fonts/fonts.css'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -17,7 +17,7 @@ self.addEventListener('fetch', (e) => {
   if (u.pathname.startsWith('/api/') || u.pathname.startsWith('/files/')) return;
   e.respondWith(
     fetch(e.request).then((r) => {
-      if (r.ok && SHELL.includes(u.pathname)) { const cp = r.clone(); caches.open(CACHE).then((c) => c.put(e.request, cp)); }
+      if (r.ok && (SHELL.includes(u.pathname) || u.pathname.startsWith('/fonts/'))) { const cp = r.clone(); caches.open(CACHE).then((c) => c.put(e.request, cp)); }
       return r;
     }).catch(() => caches.match(e.request).then((m) => m || caches.match('/')))
   );

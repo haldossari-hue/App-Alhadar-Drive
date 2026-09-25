@@ -1,8 +1,9 @@
 /* استيراد بيانات النسخة القديمة (Claude Artifact) إلى قاعدة البيانات الجديدة.
    الاستخدام: npm run import:artifact -- <مجلد_التصدير> [--replace]
-   المجلد يحتوي: stores/*.json, settings/app.json, coupons/*.json, drivers/*.json
+   المجلد يحتوي: stores/*.json, settings/app.json, coupons/*.json, drivers/*.json, pimg/*.json (الصور)
    واختيارياً: customers/*.json, orders/*.json (اسم الملف = معرف المستند) */
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { openDb } from '../src/db.js';
 import { config } from '../src/config.js';
@@ -45,6 +46,36 @@ for (const s of stores) {
   }, products);
 }
 console.log(`المتاجر: ${stores.length} (مسمّاة: ${stores.filter((s) => String(s.name || '').trim()).length}) — المنتجات: ${prodCount} (مسعّرة: ${priced})`);
+
+/* صور المنتجات: مستند لكل متجر {m: منتج→مفتاح، d: مفتاح→data URI}. الصور المتطابقة تُحفظ مرة وحدة */
+const pimgs = readAll('pimg');
+if (pimgs.length) {
+  const uploads = path.join(config.dataDir, 'uploads');
+  fs.mkdirSync(uploads, { recursive: true });
+  const byHash = new Map();
+  let linked = 0;
+  for (const doc of pimgs) {
+    const m = doc.m || {}, d = doc.d || null;
+    for (const [pid, ref] of Object.entries(m)) {
+      const uri = d ? d[ref] : ref;
+      const mt = typeof uri === 'string' && uri.match(/^data:(image\/(?:webp|png|jpeg));base64,(.+)$/);
+      if (!mt) continue;
+      const buf = Buffer.from(mt[2], 'base64');
+      const h = crypto.createHash('sha256').update(buf).digest('hex');
+      let id = byHash.get(h);
+      if (!id) {
+        id = 'fimg-' + h.slice(0, 24);
+        if (!db.get('SELECT 1 FROM files WHERE id = ?', id)) {
+          fs.writeFileSync(path.join(uploads, id), buf);
+          db.run('INSERT INTO files(id, kind, mime, size, owner, created_at) VALUES(?,?,?,?,?,?)', id, 'product', mt[1], buf.length, 'import', Date.now());
+        }
+        byHash.set(h, id);
+      }
+      linked += db.run('UPDATE products SET img = ? WHERE store_id = ? AND id = ?', '/files/' + id, doc.id, pid).changes;
+    }
+  }
+  console.log(`صور المنتجات: ${linked} منتج مربوط بـ ${byHash.size} صورة`);
+}
 
 /* الإعدادات ورمز الإدارة (الرمز القديم يستمر يشتغل ويترقّى تشفيره عند أول دخول) */
 const st = readAll('settings').find((x) => x.id === 'app');
