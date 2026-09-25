@@ -1,5 +1,5 @@
 /* الهدار درايف — الواجهة (عميل، سائق، إدارة) */
-import { CATS, CAT, ST, FLOW, ACTIVE, PAY, UNIT_PRESETS, TINTS, MAX_CART_STORES, unitPrice, claimableOrder, DEFAULT_SETTINGS } from '/shared/constants.js';
+import { CATS, CAT, ST, FLOW, ACTIVE, PAY, UNIT_PRESETS, TINTS, MAX_CART_STORES, unitPrice, claimableOrder, DEFAULT_SETTINGS, storeOpenNow, hoursLabel } from '/shared/constants.js';
 import { esc, fmt, lsg, lss, ago, clock, today0, uid, toast, beep, norm, has, waLink, secsOf, shrink, emblem, skyline } from './util.js';
 import { api, upload, tokens, setAuthLostHandler, connectStream, disconnectStream, registerSW, pushSupported, enablePush, refreshPush } from './api.js';
 
@@ -135,6 +135,7 @@ document.addEventListener('focusout', (e) => {
 function render() {
   S.pending = false;
   const app = document.getElementById('app');
+  if (S.legal) { app.innerHTML = vLegal(); return; }
   if (!S.role) { app.innerHTML = vChooser(); return; }
   if (!S.boot) { app.innerHTML = topBar() + `<div class="wrap"><div class="empty"><span class="e">🛵</span>جارِ تحميل الهدار درايف…</div></div>`; return; }
   if (S.role === 'customer') {
@@ -152,6 +153,28 @@ function topBar() {
   if (S.role === 'driver' && loggedIn() && S.driver) extra = `<button class="ib" data-act="drvOnline">${S.driver.online ? '🟢 متصل' : '⚪ غير متصل'}</button>`;
   return `<header class="top"><div class="in"><div class="brand">${emblem(34)}<span class="bt"><b>الهدار درايف</b><small>${lab}</small></span></div><div class="sp"></div>${extra}<button class="ib" data-act="switchRole" aria-label="تبديل الواجهة">تبديل</button></div><div class="najdi"></div></header>`;
 }
+const LEGAL_T = { terms: 'الشروط والأحكام', privacy: 'سياسة الخصوصية', refund: 'الاسترجاع والإلغاء' };
+function vLegal() {
+  const L = S.legalData; const pg = LEGAL_T[S.legal] ? S.legal : 'terms';
+  const bits = L ? [L.legalName, L.crNumber ? 'السجل التجاري: ' + L.crNumber : '', L.vatNumber ? 'الرقم الضريبي: ' + L.vatNumber : '', L.supportPhone ? 'التواصل: ' + L.supportPhone : ''].filter(Boolean) : [];
+  return `<header class="top"><div class="in"><div class="brand">${emblem(34)}<span class="bt"><b>الهدار درايف</b><small>${LEGAL_T[pg]}</small></span></div><div class="sp"></div><button class="ib" data-act="closeLegal">رجوع للتطبيق</button></div><div class="najdi"></div></header>
+  <div class="wrap">
+    <div class="chips" style="margin-top:14px">${Object.entries(LEGAL_T).map(([k, t]) => `<button class="chip ${k === pg ? 'on' : ''}" data-act="legalTab" data-v="${k}">${t}</button>`).join('')}</div>
+    <div class="card legaltxt">${L ? esc(L[pg] || '') : 'جارِ التحميل…'}</div>
+    ${bits.length ? `<div class="card">${bits.map((b) => `<div class="ol">${esc(b)}</div>`).join('')}</div>` : ''}
+  </div>`;
+}
+async function openLegal(page, push = true) {
+  S.legal = page;
+  if (push) history.pushState({ legal: page }, '', '/legal/' + page);
+  render(); window.scrollTo(0, 0);
+  if (!S.legalData) { try { S.legalData = await api('GET', '/api/legal'); } catch (e) { toast(e.message); } render(); }
+}
+window.addEventListener('popstate', () => {
+  const m = location.pathname.match(/^\/legal\/(\w+)/);
+  S.legal = m ? m[1] : null; render();
+});
+
 function vChooser() {
   return `<div class="chooser">
     ${emblem(76)}
@@ -163,7 +186,7 @@ function vChooser() {
       <button class="role" data-act="pickRole" data-v="driver"><span class="e">🛵</span><span><b>أنا سائق</b><small>استلم الطلبات ووصّلها</small></span></button>
       <button class="role" data-act="pickRole" data-v="admin"><span class="e">🗝️</span><span><b>الإدارة</b><small>المتاجر والأسعار والطلبات والسائقين</small></span></button>
     </div>
-    <div class="foot"><div class="najdi"></div>خدمة توصيل محلية لمدينة الهدار، محافظة الأفلاج</div>
+    <div class="foot"><div class="najdi"></div>خدمة توصيل محلية لمدينة الهدار، محافظة الأفلاج${S.boot ? bizLine() : ''}${legalLinks()}</div>
   </div>`;
 }
 const errBox = (m) => (m ? `<div class="notice errbox">${esc(m)}</div>` : '');
@@ -192,6 +215,7 @@ function vCustAuth() {
     <div class="field"><label>رقم الجوال</label><input id="au_phone" inputmode="tel" dir="ltr" placeholder="05xxxxxxxx" value="${esc(S.authPhone || '')}"></div>
     ${errBox(S.authErr)}
     <button class="btn block" data-act="authPhone">إرسال الرمز</button>
+    <p class="hint" style="text-align:center;margin-top:12px">بالمتابعة أنت توافق على <a href="/legal/terms" data-legal="terms">الشروط والأحكام</a> و<a href="/legal/privacy" data-legal="privacy">سياسة الخصوصية</a></p>
   </div></div>`;
 }
 function nav() {
@@ -261,12 +285,14 @@ function promoStrip() {
     </button>`).join('')}</div>`;
 }
 function quickStrip() {
-  const list = named().filter((s) => s.open !== false).slice().sort((a, b) => (Number(a.eta) || 30) - (Number(b.eta) || 30)).slice(0, 8);
+  const list = named().filter((s) => storeOpenNow(s)).slice().sort((a, b) => (Number(a.eta) || 30) - (Number(b.eta) || 30)).slice(0, 8);
   if (list.length < 3) return '';
   return `<h2 style="margin-top:20px">⚡ توصيل سريع الآن</h2>
     <div class="quick">${list.map((s) => { const c = CAT[s.category] || {}; return `<button class="qcard" data-go="store" data-arg="${s.id}"><span class="qt" style="--t:${esc(s.color || TINTS[0])}">${esc(s.emoji || c.emoji)}</span><span class="qb"><b>${esc(s.name)}</b><small>🕒 ${Number(s.eta) || 30} د</small></span></button>`; }).join('')}</div>`;
 }
-function footer() { const sp = set().supportPhone; return `<div class="foot"><div class="najdi"></div>الهدار درايف، توصيل محلي داخل مدينة الهدار${sp ? `<br>للتواصل: <a href="tel:${esc(sp)}" dir="ltr">${esc(sp)}</a>` : ''}</div>`; }
+function legalLinks() { return `<div class="leglinks"><a href="/legal/terms" data-legal="terms">الشروط والأحكام</a> · <a href="/legal/privacy" data-legal="privacy">الخصوصية</a> · <a href="/legal/refund" data-legal="refund">الاسترجاع</a></div>`; }
+function bizLine() { const st = set(); const bits = [st.legalName, st.crNumber ? 'س.ت ' + st.crNumber : '', st.vatNumber ? 'الرقم الضريبي ' + st.vatNumber : ''].filter(Boolean); return bits.length ? `<br><small>${esc(bits.join(' · '))}</small>` : ''; }
+function footer() { const sp = set().supportPhone; return `<div class="foot"><div class="najdi"></div>الهدار درايف، توصيل محلي داخل مدينة الهدار${sp ? `<br>للتواصل: <a href="tel:${esc(sp)}" dir="ltr">${esc(sp)}</a>` : ''}${bizLine()}${legalLinks()}</div>`; }
 function updateResults() {
   const el = document.getElementById('results'); if (!el) return;
   const q = norm(S.q);
@@ -284,10 +310,10 @@ function storeList(list) {
 }
 function storeRow(s) {
   const c = CAT[s.category] || { name: '', emoji: '🏪' };
-  const open = s.open !== false;
-  return `<button class="srow" data-go="store" data-arg="${s.id}">
+  const open = storeOpenNow(s);
+  return `<button class="srow${open ? '' : ' closed'}" data-go="store" data-arg="${s.id}">
     <span class="tile" style="--t:${esc(s.color || TINTS[0])}">${esc(s.emoji || c.emoji)}</span>
-    <span class="sinfo"><b>${esc(s.name)}</b><small>${esc(s.desc || c.name)}</small><small>🕒 ${Number(s.eta) || 30} دقيقة${s.hours ? ` · ${esc(s.hours)}` : ''}</small></span>
+    <span class="sinfo"><b>${esc(s.name)}</b><small>${esc(s.desc || c.name)}</small><small>🕒 ${Number(s.eta) || 30} دقيقة${hoursLabel(s) ? ` · ${esc(hoursLabel(s))}` : ''}</small></span>
     ${open ? '<span class="pill on"><span class="dot"></span>مفتوح</span>' : '<span class="pill off">مغلق</span>'}
   </button>`;
 }
@@ -316,10 +342,11 @@ function vStore(id) {
       <div class="shead">
         <span class="tile">${esc(s.emoji || c.emoji)}</span>
         <div><h1>${esc(s.name)}</h1>${s.desc ? `<div class="desc">${esc(s.desc)}</div>` : ''}
-        <div class="meta">${s.open === false ? '<span class="pill off">مغلق الآن</span>' : '<span class="pill on">مفتوح</span>'}<span class="pill mute">🕒 ${Number(s.eta) || 30} دقيقة</span>${s.hours ? `<span class="pill mute">${esc(s.hours)}</span>` : ''}<span class="pill mute">🛵 ${set().deliveryFee > 0 ? fmt(set().deliveryFee) : 'توصيل مجاني'}</span></div></div>
+        <div class="meta">${!storeOpenNow(s) ? '<span class="pill off">مغلق الآن</span>' : '<span class="pill on">مفتوح</span>'}<span class="pill mute">🕒 ${Number(s.eta) || 30} دقيقة</span>${hoursLabel(s) ? `<span class="pill mute">${esc(hoursLabel(s))}</span>` : ''}<span class="pill mute">🛵 ${set().deliveryFee > 0 ? fmt(set().deliveryFee) : 'توصيل مجاني'}</span></div></div>
       </div><div class="najdi"></div>
     </div>
     ${s.note ? `<div class="notice">${esc(s.note)}</div>` : ''}
+    ${!storeOpenNow(s) ? `<div class="notice errbox">المتجر مغلق الآن${s.open !== false && hoursLabel(s) ? `، أوقات العمل ${esc(hoursLabel(s))}` : ''}. تقدر تتصفح المنتجات، والطلب يتاح وقت الدوام.</div>` : ''}
     <div class="chips" style="margin:14px 0 2px">
       <button class="chip ${S.storeChoice !== 'custom' ? 'on' : ''}" data-act="storeMode" data-v="list">📋 من قائمة المتجر</button>
       <button class="chip ${S.storeChoice === 'custom' ? 'on' : ''}" data-act="storeMode" data-v="custom">✍️ اكتب طلبك بنفسك</button>
@@ -344,7 +371,7 @@ function customOrderForm(s) {
 }
 function prodCard(p, s, showStore) {
   const priced = Number(p.price) > 0;
-  const avail = p.available !== false && s.open !== false;
+  const avail = p.available !== false && storeOpenNow(s);
   const weight = Array.isArray(p.units) && p.units.length > 0;
   let body;
   if (!avail) body = `<div class="pfoot"><span class="price">${priced ? fmt(p.price) + (weight ? ' /كغ' : '') : ''}</span><span class="soon">غير متوفر</span></div>`;
@@ -390,7 +417,7 @@ function vOrder(id) {
   const idx = FLOW.indexOf(o.status);
   let tl;
   if (o.status === 'cancelled') tl = `<ul class="tl"><li class="done">طلب جديد<small>${clock(o.createdAt)}</small></li><li class="cur">ملغي${o.cancelledBy === 'payment' ? ' (لم يكتمل الدفع)' : ''}<small>${clock(o.updatedAt)}</small></li></ul>`;
-  else if (o.status === 'awaiting_payment') tl = `<div class="notice">💳 بانتظار إكمال الدفع الإلكتروني. لو ما اكتمل خلال 30 دقيقة يُلغى الطلب تلقائياً.</div>`;
+  else if (o.status === 'awaiting_payment') tl = `<div class="notice">💳 بانتظار إكمال الدفع الإلكتروني. لو ما اكتمل خلال 30 دقيقة يُلغى الطلب تلقائياً.</div><button class="btn block" style="margin-top:10px" data-act="resumePay" data-id="${o.id}">إكمال الدفع</button>`;
   else tl = `<ul class="tl">${FLOW.map((s, i) => { const lg = (o.log || []).find((l) => l.s === s); const d = s === 'onway' && o.payment !== 'cash' ? 'تم الدفع مسبقاً، الطلب في الطريق' : ST[s].d; return `<li class="${i < idx ? 'done' : i === idx ? 'cur' : ''}">${ST[s].t}<small>${lg ? clock(lg.t) : i === idx ? d : ''}</small></li>`; }).join('')}</ul>`;
   const tracking = ['picked', 'onway'].includes(o.status);
   return `<div class="wrap">
@@ -406,6 +433,8 @@ function vOrder(id) {
     <div class="card">${o.isCustom && o.priceStatus === 'pending' ? `<div class="notice">⏳ بانتظار تسعير المتجر. رسوم التوصيل ${o.fee > 0 ? fmt(o.fee) : 'مجانية'}، وراح تضاف تكلفة المنتجات بعد التسعير.</div>` : `${itemsTable(o)}${totalsX({ subtotal: o.subtotal, discount: o.discount || 0, code: o.coupon ? o.coupon.code : null, fee: o.fee, total: o.total })}`}${o.freeDeliveryUsed ? '<div class="ol">🎁 استُخدمت توصيلة مجانية لهذا الطلب</div>' : ''}${payLine(o)}</div>
     <div class="card"><div class="ol">📍 ${esc(o.customer.district)}، ${esc(o.customer.address)}</div>${o.customer.notes ? `<div class="ol">📝 ${esc(o.customer.notes)}</div>` : ''}</div>
     ${set().supportPhone ? `<div class="acts" style="margin-bottom:10px"><a class="btn line sm" href="tel:${esc(set().supportPhone)}">📞 اتصال بالإدارة</a><a class="btn wa sm" href="${waLink(set().supportPhone)}" target="_blank" rel="noopener">واتساب الإدارة</a></div>` : ''}
+    ${o.refundDue ? `<div class="notice">💸 مبلغ ${fmt(o.refundDue)} مستحق لك، وبنرجعه لنفس وسيلة الدفع خلال أيام عمل.</div>` : o.refundedAt ? `<div class="notice">✅ تم استرجاع ${fmt(o.refundedAmount)}</div>` : ''}
+    ${['delivered', 'cancelled'].includes(o.status) && !o.isCustom && (o.items || []).length ? `<button class="btn gold block" style="margin-bottom:8px" data-act="reorder" data-id="${o.id}">🔁 اطلب نفس الطلب مرة ثانية</button>` : ''}
     ${['new', 'awaiting_payment'].includes(o.status) ? `<button class="btn red block" data-act="custCancel" data-id="${o.id}">إلغاء الطلب</button>` : ''}
   </div>`;
 }
@@ -576,7 +605,7 @@ function vAOrders() {
   const del = td.filter((o) => o.status === 'delivered');
   const active = O.filter((o) => ACTIVE.includes(o.status));
   const f = S.orderFilter;
-  const fl = { active: ['النشطة', (o) => ACTIVE.includes(o.status)], new: ['الجديدة', (o) => o.status === 'new'], delivered: ['المكتملة', (o) => o.status === 'delivered'], cancelled: ['الملغاة', (o) => o.status === 'cancelled'], all: ['الكل', (o) => o.status !== 'awaiting_payment'] };
+  const fl = { active: ['النشطة', (o) => ACTIVE.includes(o.status)], new: ['الجديدة', (o) => o.status === 'new'], delivered: ['المكتملة', (o) => o.status === 'delivered'], cancelled: ['الملغاة', (o) => o.status === 'cancelled'], refund: ['استرجاع 💸', (o) => !!o.refundDue], all: ['الكل', (o) => o.status !== 'awaiting_payment'] };
   const list = O.filter(fl[f][1]);
   return `<div class="wrap wide">
     ${pushBar()}
@@ -587,7 +616,7 @@ function vAOrders() {
       <div class="stat"><b>${fmt(S.adm.cashWithDrivers)}</b><small>كاش لدى السائقين</small></div>
     </div>
     <h2>الطلبات</h2>
-    <div class="chips">${Object.entries(fl).map(([k, [t, fn]]) => `<button class="chip ${k === f ? 'on' : ''}" data-act="ofilter" data-v="${k}">${t} (${O.filter(fn).length})</button>`).join('')}</div>
+    <div class="chips">${Object.entries(fl).filter(([k, [, fn]]) => k !== 'refund' || O.some(fn)).map(([k, [t, fn]]) => `<button class="chip ${k === f ? 'on' : ''}" data-act="ofilter" data-v="${k}">${t} (${O.filter(fn).length})</button>`).join('')}</div>
     ${list.length ? list.map(aOrder).join('') : `<div class="empty"><span class="e">🧾</span>لا توجد طلبات هنا.</div>`}
   </div>`;
 }
@@ -609,6 +638,8 @@ function aOrder(o) {
     : o.payment === 'online' ? `<div class="ol bankflag">💳 <b>دفع إلكتروني</b> — ${o.paymentStatus === 'paid' ? 'مدفوع ✅' : o.paymentStatus === 'failed' ? 'فشل' : 'بانتظار الدفع'}</div>` : '';
   return `<div class="card">
     <div class="oh"><b>#${esc(o.code)}</b><span class="pill ${ST[o.status].c}">${ST[o.status].t}</span><small>${ago(o.createdAt)}</small></div>
+    ${o.refundDue ? `<div class="notice errbox" style="margin:6px 0">💸 <b>يحتاج استرجاع ${fmt(o.refundDue)}</b> للعميل${o.latePayment ? ' (دفع بعد إلغاء الطلب)' : ''}<div class="acts" style="margin-top:6px"><button class="btn sm palm" data-act="markRefunded" data-id="${o.id}">تم الاسترجاع</button></div></div>` : o.refundedAt ? `<div class="ol">✅ تم استرجاع ${fmt(o.refundedAmount)}</div>` : ''}
+    ${o.staleAlertAt && ['new', 'accepted'].includes(o.status) && !o.driverId ? `<div class="ol" style="color:var(--danger)">⏰ متأخر: ${o.isCustom && o.priceStatus === 'pending' ? 'ينتظر التسعير' : 'ما استلمه سائق'}</div>` : ''}
     ${payFlag}
     <div class="ol">${esc(o.storeEmoji)} <b>${esc(o.storeName)}</b>${o.storePhone ? ` — <a href="tel:${esc(o.storePhone)}">اتصال بالمتجر</a>` : ''}</div>
     <div class="ol">👤 ${esc(c.name)} — <a href="tel:${esc(c.phone)}">${esc(c.phone)}</a> — <a href="${waLink(c.phone)}" target="_blank" rel="noopener">واتساب</a></div>
@@ -707,6 +738,16 @@ function vSettings() {
     <div class="field"><label>أحياء الهدار المتاحة للتوصيل</label><textarea id="st_districts" style="min-height:130px">${esc((st.districts || []).join('\n'))}</textarea><span class="hint">كل حي في سطر. العميل لا يقدر يطلب إلا لحي من هذه القائمة.</span></div>
     <div class="field"><label>رقم تواصل الإدارة (يظهر للعملاء)</label><input id="st_support" dir="ltr" inputmode="tel" value="${esc(st.supportPhone || '')}" placeholder="05xxxxxxxx"></div>
     <div class="field"><label>إعلان يظهر للعملاء (اختياري)</label><input id="st_ann" value="${esc(st.announcement || '')}" placeholder="مثال: التوصيل مجاني يوم الجمعة"></div>
+    <div class="field"><label>نبّهني إذا طلب ما استلمه سائق خلال (دقيقة)</label><input id="st_alert" type="number" min="0" max="120" dir="ltr" value="${Number(st.alertAfterMin ?? 7)}"><span class="hint">يوصلك تنبيه، ويتذكّر السائقين المتصلين بالطلب. ينطبق كذلك على الطلبات الخاصة اللي ما تسعّرت. اكتب 0 لإيقافه.</span></div>
+    <h2>بيانات المنشأة</h2>
+    <p class="hint" style="margin-top:0">تظهر في أسفل التطبيق وصفحات السياسات. بوابة الدفع (Moyasar) ونظام التجارة الإلكترونية يطلبونها.</p>
+    <div class="field"><label>اسم المنشأة (كما في السجل التجاري)</label><input id="st_legal" value="${esc(st.legalName || '')}"></div>
+    <div class="two"><div class="field"><label>رقم السجل التجاري</label><input id="st_cr" dir="ltr" inputmode="numeric" value="${esc(st.crNumber || '')}"></div>
+    <div class="field"><label>الرقم الضريبي (اختياري)</label><input id="st_vat" dir="ltr" inputmode="numeric" value="${esc(st.vatNumber || '')}"></div></div>
+    <details class="card"><summary>📄 نصوص السياسات (الشروط، الخصوصية، الاسترجاع)</summary>
+      <p class="hint">نصوص مبدئية جاهزة. راجعها مع مختص قانوني وعدّلها قبل الإطلاق. تظهر على <a href="/legal/terms" data-legal="terms">صفحة السياسات</a>.</p>
+      ${['terms', 'privacy', 'refund'].map((k) => `<div class="field"><label>${LEGAL_T[k]}</label><textarea id="lg_${k}" style="min-height:180px">${esc((st.legal || {})[k] || '')}</textarea></div>`).join('')}
+    </details>
     <h2>طرق الدفع</h2>
     ${PAY.map((p) => { const live = p.id === 'cash' || p.id === 'bank' || st.payments.online; return `<div class="pay ${live ? 'sel' : 'dis'}"><span class="pe2">${p.e}</span><b>${p.name}</b>${live ? '<span class="pill on">مفعّل</span>' : '<span class="pill mute">يحتاج ربط بوابة دفع</span>'}</div>`; }).join('')}
     <p class="hint">${st.payments.online ? 'بوابة الدفع الإلكتروني مربوطة ومفعّلة.' : 'الدفع الإلكتروني (مدى، Apple Pay، STC Pay، البطاقات) يتفعّل تلقائياً بعد إضافة مفاتيح بوابة الدفع (Moyasar) في إعدادات الخادم.'}</p>
@@ -719,6 +760,11 @@ function vSettings() {
     <div class="field pinrow"><label>رمز دخول جديد للإدارة</label><input id="st_pin" type="password" inputmode="numeric" maxlength="8" value="" placeholder="••••" autocomplete="new-password"><span class="hint">اتركه فاضي إذا ما تبي تغيّر الرمز. تغيير الرمز يسجّل خروج أي جهاز آخر.</span></div>
     <div class="field"><label>رمز استرجاع احتياطي (لو نسيت رمز الدخول)</label><input id="st_recovery" type="password" autocomplete="new-password" placeholder="${st.hasRecovery ? '•••••• (معدّ مسبقاً — اتركه فاضي إذا ما تبي تغيّره)' : 'مثال: عبارة أو رمز يصعب تخمينه'}"><span class="hint">${st.hasRecovery ? 'مفعّل. احفظه في مكان آمن.' : 'لسا ما عندك رمز استرجاع. لو نسيت رمز الدخول بدون هذا الرمز، بتحتاج إعادة ضبط من الخادم.'}</span></div>
     <button class="btn block" data-act="saveSettings">حفظ الإعدادات</button>
+    <h2>المنتجات والأسعار في Excel</h2>
+    <p class="hint" style="margin-top:0">نزّل كل المتاجر والمنتجات في ملف، وعبّئ الأسعار وأسماء المتاجر في Excel، وارفعه. يعدّل الأسعار والأسماء والأقسام والتوفّر. سطر بدون <b dir="ltr">product_id</b> يضيف منتج جديد للمتجر.</p>
+    <div class="row"><button class="btn line" data-act="csvExport">⬇️ تنزيل الملف</button><button class="btn line" data-act="csvPick">⬆️ رفع الملف بعد التعديل</button></div>
+    <input type="file" id="csvIn" accept=".csv,text/csv" hidden>
+    ${S._csvLog ? `<div class="card" style="margin-top:10px">${S._csvLog.map((l) => `<div class="ol">${esc(l)}</div>`).join('')}</div>` : ''}
     <h2>استيراد بيانات النسخة القديمة</h2>
     <p class="hint" style="margin-top:0">ارفع ملف الحزمة (<b dir="ltr">alhadar-import.json</b>) لنقل المتاجر والمنتجات وصورها، والأحياء، وبيانات الحوالة، والكوبونات، والسائقين. <b>تنبيه:</b> رمز دخول الإدارة يصير نفس رمز النسخة القديمة بعد الاستيراد، وتحتاج تسجّل دخولك فيه من جديد.</p>
     <button class="btn line block" data-act="importPick">📦 اختيار ملف البيانات</button>
@@ -858,6 +904,7 @@ function shCheckout() {
       ${qx.rows.length > 1 ? qx.rows.map((r) => `<div class="tot"><span>${esc(r.storeName)}</span><span>${fmt(r.total)}</span></div>`).join('') : ''}
       ${totalsX({ subtotal: qx.grandSub, discount: qx.grandDiscount, code: S.couponOk ? S.couponCode : null, fee: qx.grandFee, total: qx.grandTotal })}`}
     </div>
+    <p class="hint" style="text-align:center">بإرسال الطلب أنت توافق على <a href="/legal/terms" data-legal="terms">الشروط</a> و<a href="/legal/refund" data-legal="refund">سياسة الاسترجاع</a></p>
     <button class="btn block" data-act="placeOrder" ${qx ? '' : 'disabled'}>${pay === 'bank' ? `أرسل الطلب — ${fmt(total)} حوالة` : pay === 'online' ? `متابعة للدفع — ${fmt(total)}` : `أرسل الطلب — ${fmt(total)} كاش`}</button>`;
 }
 function shCheckoutCustom() {
@@ -885,7 +932,9 @@ function shStore() {
     <div class="two"><div class="field"><label>وقت التوصيل (دقيقة)</label><input data-e="eta" type="number" min="5" dir="ltr" value="${Number(e.eta) || 30}"></div>
     <div class="field"><label>جوال المتجر</label><input data-e="phone" dir="ltr" inputmode="tel" value="${esc(e.phone || '')}"></div></div>
     <div class="field"><label>وصف قصير</label><input data-e="desc" value="${esc(e.desc || '')}" placeholder="مثال: مندي ومظبي وأكلات نجدية"></div>
-    <div class="field"><label>ساعات العمل</label><input data-e="hours" value="${esc(e.hours || '')}" placeholder="مثال: 6:00ص – 12:00م"></div>
+    <div class="field"><label>مواعيد العمل (تلقائي بتوقيت الرياض)</label>
+      <div class="two"><div><small class="muted">يفتح</small><input type="time" data-e="openAt" value="${esc(e.openAt || '')}" dir="ltr"></div><div><small class="muted">يغلق</small><input type="time" data-e="closeAt" value="${esc(e.closeAt || '')}" dir="ltr"></div></div>
+      <span class="hint">المتجر يقفل ويفتح تلقائياً بهذي المواعيد، ويدعم الدوام اللي يعدّي منتصف الليل (مثل 4:00م إلى 2:00ص). اتركها فاضية لو المتجر مفتوح طول اليوم.${e.hours && !e.openAt ? ` النص القديم: "${esc(e.hours)}"` : ''}</span></div>
     <div class="field"><label>ملاحظة تظهر في صفحة المتجر (اختياري)</label><input data-e="note" value="${esc(e.note || '')}"></div>
     <div class="field"><label>لون الخلفية</label><div class="row">${TINTS.map((t) => `<button data-act="tint" data-v="${t}" aria-label="لون" style="width:34px;height:34px;border-radius:10px;background:${t};border:2px solid ${e.color === t ? 'var(--ink)' : 'var(--line)'}"></button>`).join('')}</div></div>
     <div class="row" style="justify-content:space-between;margin:18px 0 10px"><h3>المنتجات (${e.products.length})</h3><button class="btn sm" data-act="addProd">+ منتج</button></div>
@@ -947,6 +996,8 @@ function go(name, arg) {
   S.view = { name, arg }; render(); window.scrollTo(0, 0);
 }
 document.addEventListener('click', async (e) => {
+  const lg = e.target.closest('[data-legal]');
+  if (lg) { e.preventDefault(); closeSheet(); openLegal(lg.dataset.legal); return; }
   const g = e.target.closest('[data-go]');
   if (g) { go(g.dataset.go, g.dataset.arg); return; }
   const b = e.target.closest('[data-act]'); if (!b) return;
@@ -1002,7 +1053,17 @@ document.addEventListener('change', async (e) => {
   if (t.id === 'csImgIn' && t.files && t.files[0]) uploadCustomPhoto(t.files[0]);
   if (t.id === 'rcptIn' && t.files && t.files[0]) uploadReceipt(t.files[0]);
   if (t.id === 'importIn' && t.files && t.files[0]) importData(t.files[0]);
+  if (t.id === 'csvIn' && t.files && t.files[0]) importCsv(t.files[0]);
 });
+async function importCsv(file) {
+  toast('جارِ رفع الملف…');
+  try {
+    const fd = new FormData(); fd.append('file', file, file.name);
+    const r = await call('POST', '/api/admin/products.csv', fd);
+    S._csvLog = [`✅ تحديث ${r.updated} منتج، إضافة ${r.added} منتج، تسمية ${r.storesRenamed} متجر${r.skipped ? `، تخطّي ${r.skipped} سطر` : ''}`, ...r.errors];
+    await Promise.all([loadRole(), loadBoot()]); render(); toast('تم تحديث المنتجات ✅');
+  } catch (err) { toast(err.message); }
+}
 async function importData(file) {
   askConfirm('استيراد البيانات من "' + file.name + '"؟ المتاجر والإعدادات الحالية بتنستبدل ببيانات الملف.', async () => {
     toast('جارِ الاستيراد…');
@@ -1044,6 +1105,8 @@ function draftCustomer() {
 }
 
 const ACT = {
+  legalTab(b) { S.legal = b.dataset.v; history.replaceState({ legal: S.legal }, '', '/legal/' + S.legal); render(); },
+  closeLegal() { S.legal = null; history.replaceState(null, '', '/'); render(); },
   pickRole(b) { S.role = b.dataset.v; lss('hd.role', S.role); S.view = { name: { customer: 'home', driver: 'available', admin: 'aorders' }[S.role] }; startRole(); },
   switchRole() { disconnectStream(); S.role = null; lss('hd.role', null); closeSheet(); syncTracking(); render(); },
   logout() {
@@ -1155,7 +1218,45 @@ const ACT = {
     if (r.orders.length > 1) go('orders'); else go('order', r.orders[0].id);
   },
   custCancel(b) {
-    askConfirm('تبي تلغي الطلب؟', async () => { await call('POST', `/api/orders/${b.dataset.id}/cancel`); await loadRole(); render(); toast('تم إلغاء الطلب'); });
+    askConfirm('تبي تلغي الطلب؟', async () => {
+      try { await call('POST', `/api/orders/${b.dataset.id}/cancel`); toast('تم إلغاء الطلب'); }
+      catch (err) { toast(err.message); }
+      await loadRole(); render();
+    });
+  },
+  async resumePay(b) {
+    b.disabled = true;
+    try { const r = await call('GET', `/api/orders/${b.dataset.id}/pay`); location.href = r.url; }
+    catch (err) { toast(err.message); await loadRole(); render(); }
+  },
+  reorder(b) {
+    const o = S.orders.find((x) => x.id === b.dataset.id); if (!o) return;
+    const s = stores().find((x) => x.id === o.storeId);
+    if (!s) { toast('المتجر غير متاح حالياً'); return; }
+    const others = cartStoreIds().filter((id) => id !== s.id);
+    if (others.length >= MAX_CART_STORES) { toast('سلتك فيها متجرين، أفرغها أول'); return; }
+    let added = 0, missing = 0;
+    for (const it of o.items) {
+      const p = (s.products || []).find((x) => x.id === it.id);
+      if (!p || !(Number(p.price) > 0) || p.available === false) { missing++; continue; }
+      let key = p.id;
+      if (Array.isArray(p.units) && p.units.length) {
+        const ui = p.units.findIndex((u) => u.label === it.unit);
+        if (ui < 0) { missing++; continue; }
+        key = p.id + '~' + ui;
+      }
+      const k = fullCartKey(s.id, key);
+      S.cart.items[k] = (S.cart.items[k] || 0) + it.qty; added++;
+    }
+    saveCart();
+    if (!added) { toast('المنتجات هذي ما عادت متوفرة'); return; }
+    toast(missing ? `انضاف ${added} منتج للسلة، و${missing} ما عاد متوفر` : 'انضاف طلبك للسلة ✅');
+    go('store', s.id);
+    if (storeOpenNow(s)) openSheet({ type: 'cart' });
+  },
+  async markRefunded(b) {
+    const o = S.adm.orders.find((x) => x.id === b.dataset.id); if (!o) return;
+    askConfirm(`تأكيد إنك رجّعت ${fmt(o.refundDue)} للعميل ${o.customer.name}؟`, async () => { await call('POST', `/api/admin/orders/${o.id}/refunded`); toast('تم تسجيل الاسترجاع'); await loadRole(); render(); }, 'palm');
   },
   async saveProfile(b) {
     const v = (id) => document.getElementById(id).value.trim();
@@ -1229,6 +1330,16 @@ const ACT = {
     tokens.set('admin', r.token); S.view = { name: 'aorders' };
     await startRole();
   },
+  async csvExport(b) {
+    b.disabled = true;
+    const r = await fetch('/api/admin/products.csv', { headers: { Authorization: 'Bearer ' + tokens.get('admin') } });
+    if (!r.ok) { toast('تعذر التنزيل، سجّل دخولك من جديد'); return; }
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement('a'); a.href = url; a.download = 'alhadar-products.csv'; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toast('تم تنزيل الملف — افتحه في Excel');
+  },
+  csvPick() { const el = document.getElementById('csvIn'); if (el) { el.value = ''; el.click(); } },
   importPick() { const el = document.getElementById('importIn'); if (el) { el.value = ''; el.click(); } },
   forgotAdmin() { S.recover = {}; openSheet({ type: 'recover' }); },
   async recoverVerify(b) {
@@ -1270,7 +1381,11 @@ const ACT = {
   },
   settle(b) {
     const d = S.adm.drivers.find((x) => x.id === b.dataset.id); if (!d) return;
-    askConfirm('تأكيد استلام ' + fmt(d.cash) + ' من ' + d.name + '؟', async () => { await call('POST', `/api/admin/drivers/${d.id}/settle`); toast('تمت التسوية'); await loadRole(); render(); }, 'palm');
+    askConfirm('تأكيد استلام ' + fmt(d.cash) + ' من ' + d.name + '؟', async () => {
+      try { await call('POST', `/api/admin/drivers/${d.id}/settle`, { expected: d.cash }); toast('تمت التسوية'); }
+      catch (err) { toast(err.message); }
+      await loadRole(); render();
+    }, 'palm');
   },
   newCoupon() { S.edit = { _new: true, code: '', note: '', kind: 'percent', value: 10, minOrder: 0, maxUses: null, expiresAt: null, categories: [], oncePerCustomer: true, active: true }; openSheet({ type: 'coupon' }); },
   editCoupon(b) { const c = S.adm.coupons.find((x) => x.code === b.dataset.id); if (!c) return; S.edit = Object.assign({}, c, { categories: [...(c.categories || [])] }); openSheet({ type: 'coupon' }); },
@@ -1331,7 +1446,10 @@ const ACT = {
       deliveryFee: v('st_fee'), minOrder: v('st_min'), supportPhone: v('st_support'), districts: v('st_districts'), announcement: v('st_ann'),
       bankName: v('st_bankname'), bankHolder: v('st_bankholder'), bankIban: v('st_bankiban'), bankOn: document.getElementById('st_bankon').checked,
       newPin: v('st_pin').trim(), recovery: v('st_recovery').trim(),
+      alertAfterMin: v('st_alert'), legalName: v('st_legal'), crNumber: v('st_cr'), vatNumber: v('st_vat'),
+      legal: { terms: v('lg_terms'), privacy: v('lg_privacy'), refund: v('lg_refund') },
     });
+    S.legalData = null;
     if (r.token) tokens.set('admin', r.token);
     S.adm.settings = r.settings;
     await loadBoot();
@@ -1391,13 +1509,15 @@ window.addEventListener('offline', () => { if (!document.querySelector('.offline
 (async function init() {
   /* روابط مباشرة من الإشعارات: ?r=customer&o=<id>&chat=1 */
   const qs = new URLSearchParams(location.search);
+  const lm = location.pathname.match(/^\/legal\/(\w+)/);
+  if (lm) openLegal(lm[1], false);
   const r = qs.get('r');
   if (['customer', 'driver', 'admin'].includes(r)) { S.role = r; lss('hd.role', r); }
   if (S.role) S.view = { name: { customer: 'home', driver: 'available', admin: 'aorders' }[S.role] };
   if (S.role === 'customer' && qs.get('o')) S.view = { name: 'order', arg: qs.get('o') };
   if (S.role === 'customer' && qs.get('v') === 'orders') S.view = { name: 'orders' };
   if (S.role === 'driver' && qs.get('chat')) S.view = { name: 'mine' };
-  if (qs.toString()) history.replaceState(null, '', '/');
+  if (qs.toString() && !lm) history.replaceState(null, '', '/');
   render();
   registerSW();
   for (;;) {

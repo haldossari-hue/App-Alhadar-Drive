@@ -85,3 +85,25 @@ export function normalizePhone(t) {
   return /^05\d{8}$/.test(n) ? n : null;
 }
 export const arabicDigits = (t) => String(t || '').replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/\s/g, '');
+
+/* ============ مواعيد العمل (بتوقيت الرياض UTC+3 دائماً، بدون توقيت صيفي) ============ */
+const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
+export const validTime = (t) => HHMM.test(String(t || ''));
+const toMin = (t) => { const m = String(t).match(HHMM); return m ? +m[1] * 60 + +m[2] : null; };
+export const riyadhMinutes = (d = new Date()) => (d.getUTCHours() * 60 + d.getUTCMinutes() + 180) % 1440;
+
+/* مفتوح الحين؟ يحترم الإغلاق اليدوي أولاً، ثم المواعيد (يدعم الدوام اللي يعدّي منتصف الليل مثل 16:00–02:00) */
+export function storeOpenNow(s, d = new Date()) {
+  if (!s || s.open === false) return false;
+  const a = toMin(s.openAt), b = toMin(s.closeAt);
+  if (a == null || b == null || a === b) return true;
+  const n = riyadhMinutes(d);
+  return a < b ? n >= a && n < b : n >= a || n < b;
+}
+/* نص الوقت بالعربي: 06:00 → 6:00ص، 00:00 → 12:00ص */
+export function fmtTime(t) {
+  const m = toMin(t); if (m == null) return '';
+  const h = Math.floor(m / 60), mm = String(m % 60).padStart(2, '0');
+  return `${h % 12 || 12}:${mm}${h < 12 ? 'ص' : 'م'}`;
+}
+export const hoursLabel = (s) => (validTime(s.openAt) && validTime(s.closeAt) && s.openAt !== s.closeAt ? `${fmtTime(s.openAt)} – ${fmtTime(s.closeAt)}` : (s.hours || ''));

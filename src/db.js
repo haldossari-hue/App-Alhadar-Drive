@@ -143,7 +143,16 @@ export function openDb(file) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   db.exec(SCHEMA);
+  migrate(db);
   return wrap(db);
+}
+
+/* ترقيات القاعدة: إضافة أعمدة جديدة للقواعد القديمة بدون فقدان بيانات */
+function migrate(db) {
+  const cols = (t) => db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
+  const add = (t, col, def) => { if (!cols(t).includes(col)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${col} ${def}`); };
+  add('stores', 'open_at', 'TEXT');
+  add('stores', 'close_at', 'TEXT');
 }
 
 function wrap(db) {

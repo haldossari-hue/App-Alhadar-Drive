@@ -13,10 +13,12 @@ import { paymentsProvider, createPayment, fetchPaymentStatus } from './services/
 import { hashSecret, verifySecret, needsRehash, issueToken, readToken, TTL, rateLimit, randomId, randomDigits, signedFileUrl } from './auth.js';
 import { createOrderService, CheckoutError } from './orders.js';
 import { importBundle } from './importer.js';
+import { LEGAL_DEFAULTS } from './legal-defaults.js';
+import { toCsv, parseCsv } from './csv.js';
 import {
-  loadStores, loadStore, saveStore, getCoupon, couponRow, customerRow, driverRow, getOrder, orderRow, viewOrder,
+  insertProduct, loadStores, loadStore, saveStore, getCoupon, couponRow, customerRow, driverRow, getOrder, orderRow, viewOrder,
 } from './repo.js';
-import { CAT, CATS, TINTS, UNIT_PRESETS, DRIVER_ACTIVE, claimableOrder, normalizePhone, arabicDigits, round2 } from '../public/shared/constants.js';
+import { CAT, CATS, TINTS, UNIT_PRESETS, DRIVER_ACTIVE, claimableOrder, normalizePhone, arabicDigits, round2, validTime } from '../public/shared/constants.js';
 
 const httpError = (status, message, code) => Object.assign(new Error(message), { statusCode: status, code: code || 'error' });
 
@@ -54,7 +56,8 @@ export async function buildApp(opts = {}) {
   /* الأخطاء: رسائل عربية واضحة للعميل بدون تسريب تفاصيل داخلية */
   app.setErrorHandler((err, req, reply) => {
     if (err instanceof CheckoutError) return reply.code(err.code === 'not_found' ? 404 : err.code === 'forbidden' ? 403 : err.code === 'taken' ? 409 : 400).send({ error: err.message, code: err.code });
-    if (err.statusCode && err.statusCode < 500) return reply.code(err.statusCode).send({ error: err.message, code: err.code || 'error' });
+    /* 502: خدمة خارجية (SMS أو بوابة الدفع) ما ردّت — رسالتنا العربية مقصودة وتوصل للمستخدم */
+    if (err.statusCode && (err.statusCode < 500 || err.statusCode === 502)) return reply.code(err.statusCode).send({ error: err.message, code: err.code || 'error' });
     req.log.error(err);
     reply.code(500).send({ error: 'صار خطأ غير متوقع، حاول مرة أخرى', code: 'server' });
   });
@@ -110,8 +113,10 @@ export async function buildApp(opts = {}) {
       deliveryFee: s.deliveryFee, minOrder: s.minOrder, districts: s.districts, announcement: s.announcement, supportPhone: s.supportPhone,
       payments: { cash: true, bank: s.payments.bank !== false, online: onlinePay() },
       bankName: s.bankName, bankHolder: s.bankHolder, bankIban: s.bankIban, loyaltyOn: s.loyaltyOn, loyaltyEvery: s.loyaltyEvery,
+      legalName: s.legalName || '', crNumber: s.crNumber || '', vatNumber: s.vatNumber || '',
     };
   }
+  const legalTexts = () => ({ ...LEGAL_DEFAULTS, ...db.kvGet('legal', {}) });
   function publicCoupons() {
     const now = Date.now();
     return db.all('SELECT * FROM coupons WHERE active = 1 ORDER BY created_at DESC').map(couponRow)
@@ -124,6 +129,9 @@ export async function buildApp(opts = {}) {
     coupons: publicCoupons(),
     vapidKey: push.publicKey,
   }));
+
+  /* صفحات السياسات (عامة بدون تسجيل دخول — تطلبها بوابات الدفع ونظام حماية البيانات) */
+  app.get('/api/legal', async () => ({ ...legalTexts(), ...(({ legalName, crNumber, vatNumber, supportPhone }) => ({ legalName, crNumber, vatNumber, supportPhone }))(publicSettings()) }));
 
   /* ============ حساب العميل: تحقق SMS ============ */
   app.post('/api/auth/otp', async (req) => {
@@ -140,7 +148,14 @@ export async function buildApp(opts = {}) {
       ON CONFLICT(phone) DO UPDATE SET code_hash=excluded.code_hash, expires_at=excluded.expires_at, attempts=0, sent_at=excluded.sent_at,
         sent_count=?, window_start=?`,
       phone, hashSecret(code), now + 5 * 60e3, now, now, inWindow ? cur.sent_count + 1 : 1, inWindow ? cur.window_start : now);
-    await sms(phone, `رمز الدخول للهدار درايف: ${code}\nلا تشاركه مع أحد.`);
+    try { await sms(phone, `رمز الدخول للهدار درايف: ${code}\nلا تشاركه مع أحد.`); }
+    catch (e) {
+      req.log.error(e);
+      /* نرجّع الحالة كما كانت عشان العميل يقدر يحاول فوراً بدون انتظار */
+      if (cur) db.run('UPDATE otp_codes SET sent_at = ?, sent_count = ?, window_start = ?, code_hash = ? WHERE phone = ?', cur.sent_at, cur.sent_count, cur.window_start, cur.code_hash, phone);
+      else db.run('DELETE FROM otp_codes WHERE phone = ?', phone);
+      throw httpError(502, 'تعذر إرسال رسالة التحقق، حاول بعد شوي');
+    }
     const exists = !!db.get('SELECT 1 FROM customers WHERE phone = ?', phone);
     return { ok: true, exists, ...(config.otpDevEcho || opts.otpEcho ? { devCode: code } : {}) };
   });
@@ -229,7 +244,24 @@ export async function buildApp(opts = {}) {
 
   app.post('/api/orders/:id/cancel', async (req) => {
     if (!req.who || !['customer', 'admin'].includes(req.who.role)) throw httpError(401, 'سجّل دخولك من جديد', 'auth');
+    const o = getOrder(db, req.params.id);
+    if (o && o.status === 'awaiting_payment') {
+      /* قبل الإلغاء نسأل البوابة: يمكن العميل دفع فعلاً والتأكيد ما وصلنا للحين */
+      const p = db.get("SELECT * FROM payments WHERE group_code = ? AND status = 'initiated' ORDER BY created_at DESC LIMIT 1", o.groupCode);
+      if (p && (await reconcile(p).catch(() => 'initiated')) === 'paid') throw httpError(409, 'تم الدفع فعلاً ✅ وطلبك صار جديد ووصل للسائقين', 'already_paid');
+    }
     return viewOrder(svc.cancel(req.params.id, req.who), req.who, db);
+  });
+
+  /* إكمال دفع متعثر: يرجع رابط صفحة الدفع نفسها لو لسا صالحة */
+  app.get('/api/orders/:id/pay', { preHandler: isCustomer }, async (req) => {
+    const o = getOrder(db, req.params.id);
+    if (!o || o.customer.phone !== req.who.sub) throw httpError(404, 'الطلب غير موجود');
+    if (o.status !== 'awaiting_payment') throw httpError(400, o.paymentStatus === 'paid' ? 'الطلب مدفوع' : 'الطلب ما عاد بانتظار الدفع');
+    const p = db.get("SELECT * FROM payments WHERE group_code = ? AND status = 'initiated' ORDER BY created_at DESC LIMIT 1", o.groupCode);
+    if (!p) throw httpError(400, 'انتهت صلاحية الدفع، اطلب من جديد');
+    if ((await reconcile(p).catch(() => 'initiated')) !== 'initiated') throw httpError(409, 'تحدّثت حالة الدفع، حدّث الصفحة', 'changed');
+    return { url: p.url };
   });
 
   /* ============ السائق ============ */
@@ -308,7 +340,7 @@ export async function buildApp(opts = {}) {
 
   function adminSettings() {
     const s = db.settings();
-    return { ...s, payments: { ...s.payments, online: onlinePay() }, hasRecovery: !!adminState().recoveryHash };
+    return { alertAfterMin: 7, ...s, payments: { ...s.payments, online: onlinePay() }, hasRecovery: !!adminState().recoveryHash, legal: legalTexts() };
   }
   function driversWithStats() {
     const stats = new Map(db.all(`SELECT driver_id,
@@ -358,6 +390,8 @@ export async function buildApp(opts = {}) {
       desc: String(b.desc ?? existing?.desc ?? '').trim().slice(0, 160),
       note: String(b.note ?? existing?.note ?? '').trim().slice(0, 300),
       open: b.open === undefined ? existing?.open !== false : !!b.open,
+      openAt: b.openAt !== undefined ? (validTime(b.openAt) ? b.openAt : '') : existing?.openAt || '',
+      closeAt: b.closeAt !== undefined ? (validTime(b.closeAt) ? b.closeAt : '') : existing?.closeAt || '',
       sort: Number(b.sort) || existing?.sort || (db.get('SELECT COALESCE(MAX(sort),0)+1 n FROM stores').n),
     };
   }
@@ -451,7 +485,9 @@ export async function buildApp(opts = {}) {
     db.run('DELETE FROM drivers WHERE id = ?', req.params.id);
     return { ok: true };
   });
-  app.post('/api/admin/drivers/:id/settle', { preHandler: isAdmin }, async (req) => ({ settled: svc.settleDriver(req.params.id) }));
+  app.post('/api/admin/drivers/:id/settle', { preHandler: isAdmin }, async (req) =>
+    ({ settled: svc.settleDriver(req.params.id, req.body && req.body.expected != null ? Number(req.body.expected) : null) }));
+  app.post('/api/admin/orders/:id/refunded', { preHandler: isAdmin }, async (req) => viewOrder(svc.markRefunded(req.params.id), req.who, db));
 
   /* الكوبونات */
   app.put('/api/admin/coupons/:code', { preHandler: isAdmin }, async (req) => {
@@ -503,6 +539,13 @@ export async function buildApp(opts = {}) {
     if (b.bankOn !== undefined) patch.payments = { ...cur.payments, cash: true, bank: !!b.bankOn };
     if (b.loyaltyOn !== undefined) patch.loyaltyOn = !!b.loyaltyOn;
     if (b.loyaltyEvery !== undefined) patch.loyaltyEvery = Math.max(2, Math.floor(Number(b.loyaltyEvery) || 5));
+    if (b.alertAfterMin !== undefined) patch.alertAfterMin = Math.min(120, Math.max(0, Math.floor(Number(b.alertAfterMin) || 0)));
+    for (const k of ['legalName', 'crNumber', 'vatNumber']) if (b[k] !== undefined) patch[k] = String(b[k]).trim().slice(0, 120);
+    if (b.legal && typeof b.legal === 'object') {
+      const cur = db.kvGet('legal', {});
+      for (const k of ['terms', 'privacy', 'refund']) if (typeof b.legal[k] === 'string') cur[k] = b.legal[k].trim().slice(0, 20000) || LEGAL_DEFAULTS[k];
+      db.kvSet('legal', cur);
+    }
     db.saveSettings(patch);
     /* تغيير رمز الإدارة ورمز الاسترجاع منفصل: أي خطأ فيهم ما يوقف حفظ بقية الإعدادات */
     const warnings = [];
@@ -521,6 +564,55 @@ export async function buildApp(opts = {}) {
     hub.all({ type: 'catalog' });
     const out = { settings: adminSettings(), warnings };
     if (pin && !warnings.length) out.token = issueToken({ role: 'admin', sub: 'admin', v: a.v }, TTL.admin);
+    return out;
+  });
+
+  /* جدول المنتجات والأسعار (Excel/CSV): تصدير، تعديل في Excel، ثم استيراد */
+  const CSV_HEAD = ['store_id', 'اسم المتجر', 'product_id', 'القسم', 'اسم المنتج', 'الوحدة', 'السعر', 'متوفر (1/0)', 'بالوزن (1/0)'];
+  app.get('/api/admin/products.csv', { preHandler: isAdmin }, async (req, reply) => {
+    const rows = [];
+    for (const st of loadStores(db)) {
+      if (!st.products.length) rows.push([st.id, st.name, '', '', '', '', '', '', '']);
+      for (const p of st.products) rows.push([st.id, st.name, p.id, p.sec, p.name, p.unit, p.price || '', p.available ? 1 : 0, p.saleType === 'weight' ? 1 : 0]);
+    }
+    reply.header('Content-Type', 'text/csv; charset=utf-8');
+    reply.header('Content-Disposition', 'attachment; filename="alhadar-products.csv"');
+    return toCsv(CSV_HEAD, rows);
+  });
+  app.post('/api/admin/products.csv', { preHandler: isAdmin }, async (req) => {
+    const file = await req.file();
+    if (!file) throw httpError(400, 'اختر الملف');
+    const rows = parseCsv((await file.toBuffer()).toString('utf8'));
+    if (rows.length < 2 || rows[0][0].replace(/^\uFEFF/, '').trim() !== 'store_id') throw httpError(400, 'الملف لازم يكون بنفس أعمدة الملف المصدَّر (أول عمود store_id)');
+    const out = { storesRenamed: 0, updated: 0, added: 0, skipped: 0, errors: [] };
+    const num = (v) => { const t = arabicDigits(v).replace(/[^\d.]/g, ''); return t === '' ? null : round2(Number(t)); };
+    db.tx(() => {
+      const renamed = new Set();
+      rows.slice(1).forEach((r, i) => {
+        const line = i + 2;
+        const [sid, sname, pid, sec, name, unit, price, avail] = r.map((x) => String(x ?? '').trim());
+        const store = db.get('SELECT * FROM stores WHERE id = ?', sid);
+        if (!store) { out.errors.push(`سطر ${line}: المتجر "${sid}" غير موجود`); out.skipped++; return; }
+        if (sname && sname !== store.name && !renamed.has(sid)) { db.run('UPDATE stores SET name = ?, updated_at = ? WHERE id = ?', sname.slice(0, 80), Date.now(), sid); renamed.add(sid); out.storesRenamed++; }
+        if (!pid && !name) return;
+        const pr = num(price);
+        if (price && pr == null) { out.errors.push(`سطر ${line}: السعر "${price}" غير صحيح`); out.skipped++; return; }
+        const av = avail === '' ? null : !['0', 'لا', 'no', 'false'].includes(avail.toLowerCase());
+        if (pid) {
+          const p = db.get('SELECT * FROM products WHERE store_id = ? AND id = ?', sid, pid);
+          if (!p) { out.errors.push(`سطر ${line}: المنتج "${pid}" غير موجود في ${store.name || sid}`); out.skipped++; return; }
+          db.run('UPDATE products SET name = ?, unit = ?, sec = ?, price = ?, available = ? WHERE store_id = ? AND id = ?',
+            (name || p.name).slice(0, 120), p.sale_type === 'weight' ? '' : unit.slice(0, 40), sec.slice(0, 60), pr ?? p.price, av == null ? p.available : av ? 1 : 0, sid, pid);
+          out.updated++;
+        } else {
+          const sort = db.get('SELECT COALESCE(MAX(sort),-1)+1 n FROM products WHERE store_id = ?', sid).n;
+          insertProduct(db, sid, { id: randomId('p', 6), name: name.slice(0, 120), unit: unit.slice(0, 40), sec: sec.slice(0, 60), price: pr || 0, available: av !== false }, sort);
+          out.added++;
+        }
+      });
+    });
+    catalogChanged();
+    out.errors = out.errors.slice(0, 30);
     return out;
   });
 
@@ -634,11 +726,12 @@ export async function buildApp(opts = {}) {
   /* ============ الدفع الإلكتروني ============ */
   async function reconcile(p) {
     if (p.status !== 'initiated') return p.status;
+    /* ملاحظة: الدفع المنتهي يُعاد فحصه من الـ webhook فقط، فلو دفع العميل متأخر نسجّله كمستحق للاسترجاع */
     const r = await fetchPaymentStatus(p);
     if (r.status === 'paid') {
       if (Math.abs((r.amount ?? p.amount) - p.amount) > 0.01) { app.log.error({ p }, 'payment amount mismatch'); return 'initiated'; }
-      db.run("UPDATE payments SET status = 'paid', updated_at = ? WHERE id = ? AND status = 'initiated'", Date.now(), p.id);
-      svc.markGroupPaid(p.group_code);
+      db.run("UPDATE payments SET status = 'paid', updated_at = ? WHERE id = ? AND status != 'paid'", Date.now(), p.id);
+      if (!svc.markGroupPaid(p.group_code)) svc.markLatePaid(p.group_code);
       return 'paid';
     }
     if (r.status === 'failed') {
@@ -655,7 +748,7 @@ export async function buildApp(opts = {}) {
     const ref = d.invoice_id || (d.id && String(d.id)) || '';
     const pid = (d.metadata && d.metadata.payment_id) || '';
     const p = db.get('SELECT * FROM payments WHERE provider_ref = ? OR id = ?', ref, pid);
-    if (p) await reconcile(p);
+    if (p) await reconcile(p.status === 'expired' || p.status === 'failed' ? { ...p, status: 'initiated' } : p);
     return { ok: true };
   });
   app.get('/api/payments/return/:pid', async (req, reply) => {
@@ -683,6 +776,31 @@ export async function buildApp(opts = {}) {
       return reply.redirect('/api/payments/return/' + p.id);
     });
   }
+  /* تنبيه: طلب ما استلمه سائق، أو طلب خاص ما تسعّر، خلال المدة المحددة بالإعدادات */
+  function alertStale() {
+    const mins = Number(db.settings().alertAfterMin ?? 7);
+    if (!(mins > 0)) return;
+    const cutoff = Date.now() - mins * 60e3;
+    const rows = db.all(`SELECT * FROM orders WHERE status IN ('new','accepted') AND driver_id IS NULL AND updated_at < ?
+      AND json_extract(data, '$.staleAlertAt') IS NULL`, cutoff).map(orderRow);
+    for (const o of rows) {
+      db.run("UPDATE orders SET data = json_set(data, '$.staleAlertAt', ?) WHERE id = ?", Date.now(), o.id);
+      const pending = o.isCustom && o.priceStatus === 'pending';
+      const text = pending ? `⏰ طلب خاص #${o.code} ينتظر تسعيرك من ${mins} دقائق` : `⏰ الطلب #${o.code} بدون سائق من ${mins} دقائق`;
+      hub.admins({ type: 'notify', text, sound: true });
+      hub.admins({ type: 'order', id: o.id });
+      push.admins({ title: pending ? 'طلب ينتظر التسعير' : 'طلب بدون سائق', body: text.replace('⏰ ', ''), url: '/?r=admin', tag: 'stale-' + o.id });
+      if (!pending) {
+        hub.drivers({ type: 'notify', text: `🔔 الطلب #${o.code} لسا ينتظر سائق`, sound: true, onlineOnly: true });
+        push.onlineDrivers({ title: 'طلب ينتظر سائق', body: `#${o.code} — ${o.storeName} ← ${o.customer.district}`, url: '/?r=driver', tag: 'avail-' + o.id });
+      }
+    }
+  }
+  app.decorate('alertStale', alertStale);
+  const staleTimer = setInterval(() => { try { alertStale(); } catch (e) { app.log.warn(e); } }, 60e3);
+  staleTimer.unref();
+  app.addHook('onClose', async () => clearInterval(staleTimer));
+
   /* الطلبات المعلقة بالدفع أكثر من 30 دقيقة: نتحقق منها ثم نلغيها إن لم تُدفع */
   const sweep = setInterval(async () => {
     for (const p of db.all("SELECT * FROM payments WHERE status = 'initiated' AND created_at < ?", Date.now() - 30 * 60e3)) {

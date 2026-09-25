@@ -16,6 +16,7 @@ export function storeRow(r, products) {
   return {
     id: r.id, name: r.name, category: r.category, emoji: r.emoji, color: r.color, eta: r.eta,
     hours: r.hours || '', phone: r.phone || '', desc: r.descr || '', note: r.note || '', open: bool(r.open), sort: r.sort,
+    openAt: r.open_at || '', closeAt: r.close_at || '',
     products: products || [],
   };
 }
@@ -35,12 +36,12 @@ export function loadStore(db, id) {
 /* يستبدل كل منتجات المتجر بالقائمة الجديدة (نفس سلوك محرّر المتجر) */
 export function saveStore(db, id, s, products) {
   db.tx(() => {
-    db.run(`INSERT INTO stores(id,name,category,emoji,color,eta,hours,phone,descr,note,open,sort,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+    db.run(`INSERT INTO stores(id,name,category,emoji,color,eta,hours,phone,descr,note,open,sort,open_at,close_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET name=excluded.name, category=excluded.category, emoji=excluded.emoji, color=excluded.color,
         eta=excluded.eta, hours=excluded.hours, phone=excluded.phone, descr=excluded.descr, note=excluded.note,
-        open=excluded.open, sort=excluded.sort, updated_at=excluded.updated_at`,
-      id, s.name, s.category, s.emoji, s.color, s.eta, s.hours, s.phone, s.desc, s.note, s.open ? 1 : 0, s.sort, Date.now());
+        open=excluded.open, sort=excluded.sort, open_at=excluded.open_at, close_at=excluded.close_at, updated_at=excluded.updated_at`,
+      id, s.name, s.category, s.emoji, s.color, s.eta, s.hours, s.phone, s.desc, s.note, s.open ? 1 : 0, s.sort, s.openAt || null, s.closeAt || null, Date.now());
     if (products) {
       db.run('DELETE FROM products WHERE store_id = ?', id);
       products.forEach((p, i) => insertProduct(db, id, p, i));

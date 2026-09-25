@@ -318,3 +318,170 @@ test('إعادة ضبط رمز الإدارة من متغير البيئة ADMIN
     await a2.close();
   } finally { config.adminResetPin = ''; fs.rmSync(d2, { recursive: true, force: true }); }
 });
+
+/* ============ الدفعة الثانية: الإصلاحات والتحسينات ============ */
+async function freshAdmin() {
+  resetRateLimits();
+  for (const pin of ['7777', '4321', '98765', '1234']) {
+    const r = await req('POST', '/api/admin/login', { pin });
+    if (r.status === 200) {
+      admin = r.body.token;
+      await ok(req('PUT', '/api/admin/settings', { deliveryFee: 10, minOrder: 0, districts: 'حي الطرف\nحي البرقه' }, admin));
+      return admin;
+    }
+  }
+  throw new Error('no admin pin');
+}
+const fdPost = (url, token, name, body, type) => {
+  const boundary = 'B' + Date.now();
+  const payload = Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: ${type}\r\n\r\n`), Buffer.from(body), Buffer.from(`\r\n--${boundary}--\r\n`)]);
+  return app.inject({ method: 'POST', url, payload, headers: { authorization: 'Bearer ' + token, 'content-type': `multipart/form-data; boundary=${boundary}` } });
+};
+
+test('مواعيد العمل: المتجر يقفل تلقائياً خارج الدوام ويرفض الطلب', async () => {
+  await freshAdmin();
+  const { constants } = { constants: await import('../../public/shared/constants.js') };
+  const n = constants.riyadhMinutes();
+  const hm = (m) => `${String(Math.floor(((m + 1440) % 1440) / 60)).padStart(2, '0')}:${String(((m + 1440) % 1440) % 60).padStart(2, '0')}`;
+  await ok(req('PUT', '/api/admin/stores/' + app.s1, { name: 'مطعم الوادي', openAt: hm(n + 60), closeAt: hm(n + 120) }, admin));
+  const t = await customer('0500000030');
+  const r = await req('POST', '/api/orders', { items: [{ storeId: app.s1, productId: 'k', qty: 1 }], customer: addr, payment: 'cash' }, t);
+  assert.equal(r.body.code, 'closed');
+  assert.match(r.body.error, /أوقات العمل/);
+  const boot = await ok(req('GET', '/api/bootstrap'));
+  assert.equal(boot.stores.find((s) => s.id === app.s1).openAt, hm(n + 60));
+  await ok(req('PUT', '/api/admin/stores/' + app.s1, { name: 'مطعم الوادي', openAt: hm(n - 60), closeAt: hm(n + 60) }, admin));
+  await ok(req('POST', '/api/orders', { items: [{ storeId: app.s1, productId: 'k', qty: 1 }], customer: addr, payment: 'cash' }, t));
+  await ok(req('PUT', '/api/admin/stores/' + app.s1, { name: 'مطعم الوادي', openAt: '', closeAt: '' }, admin));
+});
+
+test('إلغاء طلب مدفوع بحوالة: يسجل مبلغ مستحق للاسترجاع، والإدارة تأكد الاسترجاع', async () => {
+  await freshAdmin();
+  const t = await customer('0500000031');
+  const up = (await fdPost('/api/uploads?kind=receipt', t, 'r.pdf', Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(50, 32)]), 'application/pdf')).json();
+  const { orders: [o] } = await ok(req('POST', '/api/orders', { items: [{ storeId: app.s1, productId: 'k', qty: 1 }], customer: addr, payment: 'bank', receiptId: up.id }, t));
+  const c = await ok(req('POST', `/api/orders/${o.id}/cancel`, {}, t));
+  assert.equal(c.refundDue, 40);
+  const r = await ok(req('POST', `/api/admin/orders/${o.id}/refunded`, {}, admin));
+  assert.equal(r.refundDue, undefined);
+  assert.equal(r.refundedAmount, 40);
+  assert.equal((await req('POST', `/api/admin/orders/${o.id}/refunded`, {}, admin)).status, 400);
+});
+
+test('الدفع الإلكتروني: العميل ما يقدر يلغي طلب دفعه فعلاً، والدفع المتأخر يسجل استرجاع', async () => {
+  const { config } = await import('../../src/config.js');
+  const payments = await import('../../src/services/payments.js');
+  config.payments.provider = 'fake';
+  try {
+    await freshAdmin();
+    const t = await customer('0500000032');
+    const items = [{ storeId: app.s1, productId: 'k', qty: 1 }];
+    /* الحالة ١: دفع بالبوابة لكن التأكيد ما وصل، ثم العميل يضغط إلغاء */
+    const r1 = await ok(req('POST', '/api/orders', { items, customer: addr, payment: 'online' }, t));
+    const { __setFakeStatus } = payments;
+    __setFakeStatus(() => 'paid'); // البوابة تقول مدفوع، والتأكيد ما وصلنا للحين
+    const c = await req('POST', `/api/orders/${r1.orders[0].id}/cancel`, {}, t);
+    assert.equal(c.body.code, 'already_paid');
+    const mine = (await ok(req('GET', '/api/my/orders', null, t))).find((x) => x.id === r1.orders[0].id);
+    assert.equal(mine.status, 'new');
+    /* الحالة ٢: العميل ألغى، ثم وصل تأكيد الدفع من البوابة */
+    __setFakeStatus(() => 'pending');
+    const r2 = await ok(req('POST', '/api/orders', { items, customer: addr, payment: 'online' }, t));
+    await ok(req('POST', `/api/orders/${r2.orders[0].id}/cancel`, {}, t));
+    const p2 = app.db.get('SELECT * FROM payments WHERE group_code = ?', r2.orders[0].groupCode);
+    __setFakeStatus(() => 'paid');
+    await ok(req('POST', '/api/payments/webhook', { data: { metadata: { payment_id: p2.id } } }));
+    const late = (await ok(req('GET', '/api/admin/data', null, admin))).orders.find((x) => x.id === r2.orders[0].id);
+    assert.equal(late.status, 'cancelled');
+    assert.equal(late.refundDue, 40);
+    assert.equal(late.latePayment, true);
+    assert.ok(pushes.some(([k, p]) => k === 'admins' && /استرجاع/.test(p.title)));
+  } finally { config.payments.provider = ''; payments.__setFakeStatus(null); }
+});
+
+test('تسوية كاش السائق ترفض لو المبلغ تغيّر عن اللي شافته الإدارة', async () => {
+  await freshAdmin();
+  const t = await customer('0500000033');
+  const dt = (await ok(req('POST', '/api/driver/login', { phone: '0555555551', pin: '1111' }))).token;
+  const deliver = async () => {
+    const { orders: [o] } = await ok(req('POST', '/api/orders', { items: [{ storeId: app.s1, productId: 'k', qty: 1 }], customer: addr, payment: 'cash' }, t));
+    await ok(req('POST', `/api/driver/orders/${o.id}/claim`, {}, dt));
+    for (const to of ['picked', 'onway', 'delivered']) await ok(req('POST', `/api/driver/orders/${o.id}/advance`, { to }, dt));
+  };
+  await deliver();
+  const d = (await ok(req('GET', '/api/admin/data', null, admin))).drivers.find((x) => x.phone === '0555555551');
+  await deliver(); // طلب جديد يوصل بعد ما شافت الإدارة المبلغ
+  const r = await req('POST', `/api/admin/drivers/${d.id}/settle`, { expected: d.cash }, admin);
+  assert.equal(r.body.code, 'amount_changed');
+  await ok(req('POST', `/api/admin/drivers/${d.id}/settle`, { expected: d.cash + 40 }, admin));
+  assert.equal((await ok(req('GET', '/api/driver/orders', null, dt))).unsettled, 0);
+});
+
+test('فشل إرسال SMS ما يقفل العميل دقيقة', async () => {
+  resetRateLimits();
+  let fail = true;
+  const d3 = fs.mkdtempSync(path.join(os.tmpdir(), 'hd-sms-'));
+  const a = await buildApp({ dataDir: d3, logger: false, push: fakePush, otpEcho: true, sendSms: async () => { if (fail) throw new Error('down'); } });
+  try {
+    const r1 = await a.inject({ method: 'POST', url: '/api/auth/otp', payload: { phone: '0500000034' } });
+    assert.equal(r1.statusCode, 502);
+    fail = false;
+    const r2 = await a.inject({ method: 'POST', url: '/api/auth/otp', payload: { phone: '0500000034' } });
+    assert.equal(r2.statusCode, 200, 'يقدر يعيد المحاولة فوراً');
+  } finally { await a.close(); fs.rmSync(d3, { recursive: true, force: true }); }
+});
+
+test('تنبيه طلب بدون سائق بعد المدة المحددة، مرة وحدة فقط', async () => {
+  await freshAdmin();
+  await ok(req('PUT', '/api/admin/settings', { alertAfterMin: 5 }, admin));
+  const t = await customer('0500000035');
+  const { orders: [o] } = await ok(req('POST', '/api/orders', { items: [{ storeId: app.s1, productId: 'k', qty: 1 }], customer: addr, payment: 'cash' }, t));
+  app.db.run('UPDATE orders SET updated_at = ? WHERE id = ?', Date.now() - 6 * 60e3, o.id);
+  const before = pushes.length;
+  app.alertStale();
+  const alerts = pushes.slice(before).filter(([k, p]) => k === 'admins' && p.tag === 'stale-' + o.id);
+  assert.equal(alerts.length, 1);
+  app.alertStale();
+  assert.equal(pushes.slice(before).filter(([k, p]) => k === 'admins' && p.tag === 'stale-' + o.id).length, 1, 'ما يتكرر');
+  const a = (await ok(req('GET', '/api/admin/data', null, admin))).orders.find((x) => x.id === o.id);
+  assert.ok(a.staleAlertAt);
+});
+
+test('جدول المنتجات: تصدير CSV ثم تعديل الأسعار وأسماء المتاجر وإضافة منتج', async () => {
+  await freshAdmin();
+  const { parseCsv, toCsv } = await import('../../src/csv.js');
+  const r = await app.inject({ url: '/api/admin/products.csv', headers: { authorization: 'Bearer ' + admin } });
+  assert.equal(r.statusCode, 200);
+  assert.ok(r.body.startsWith('﻿'), 'BOM لعرض العربي في Excel');
+  const rows = parseCsv(r.body);
+  const head = rows[0];
+  const i = rows.findIndex((x) => x[0] === app.s1 && x[2] === 'z');
+  rows[i][6] = '٢٥'; // أرقام عربية
+  rows[i][1] = 'مطعم الوادي الجديد';
+  rows.push([app.s1, '', '', 'حلويات', 'كنافة', 'صحن', '15', '1', '0']);
+  rows.push(['nope', '', 'x', '', 'y', '', '1', '1', '0']);
+  const up = await fdPost('/api/admin/products.csv', admin, 'p.csv', toCsv(head, rows.slice(1)), 'text/csv');
+  assert.equal(up.statusCode, 200, up.body);
+  const res = up.json();
+  assert.equal(res.added, 1);
+  assert.equal(res.storesRenamed, 1);
+  assert.equal(res.skipped, 1);
+  const s = (await ok(req('GET', '/api/bootstrap'))).stores.find((x) => x.id === app.s1);
+  assert.equal(s.name, 'مطعم الوادي الجديد');
+  assert.equal(s.products.find((p) => p.id === 'z').price, 25);
+  assert.ok(s.products.some((p) => p.name === 'كنافة' && p.price === 15));
+});
+
+test('صفحات السياسات عامة وقابلة للتعديل، وبيانات المنشأة تظهر للعملاء', async () => {
+  await freshAdmin();
+  const def = await ok(req('GET', '/api/legal'));
+  assert.match(def.terms, /الشروط والأحكام/);
+  await ok(req('PUT', '/api/admin/settings', { legalName: 'مؤسسة الهدار درايف', crNumber: '1010101010', legal: { refund: 'سياسة مخصصة' } }, admin));
+  const l = await ok(req('GET', '/api/legal'));
+  assert.equal(l.refund, 'سياسة مخصصة');
+  assert.equal(l.crNumber, '1010101010');
+  assert.equal((await ok(req('GET', '/api/bootstrap'))).settings.legalName, 'مؤسسة الهدار درايف');
+  const page = await app.inject('/legal/terms');
+  assert.equal(page.statusCode, 200);
+  assert.match(page.body, /<div id="app">/);
+});

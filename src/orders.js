@@ -1,6 +1,6 @@
 /* خدمة الطلبات: الإنشاء، تدفق الحالات، الولاء، الاسترجاع، والإشعارات */
-import { ACTIVE, ST, DRIVER_NEXT, claimableOrder, round2 } from '../public/shared/constants.js';
-import { buildBaskets, computeCheckout, validateForPlacement, loyaltyEarned, CheckoutError } from './domain/pricing.js';
+import { ACTIVE, ST, DRIVER_NEXT, claimableOrder, round2, storeOpenNow } from '../public/shared/constants.js';
+import { buildBaskets, computeCheckout, validateForPlacement, loyaltyEarned, closedMsg, CheckoutError } from './domain/pricing.js';
 import { loadStore, getCoupon, getOrder, writeOrder, customerRow } from './repo.js';
 import { randomDigits, randomId } from './auth.js';
 
@@ -138,7 +138,7 @@ export function createOrderService({ db, hub, push, log }) {
       if (!desc) throw new CheckoutError('اكتب وصف طلبك');
       const s = loadStore(db, String(body.storeId || ''));
       if (!s || !s.name.trim()) throw new CheckoutError('المتجر غير موجود');
-      if (!s.open) throw new CheckoutError('المتجر مغلق الآن');
+      if (!storeOpenNow(s)) throw new CheckoutError(closedMsg(s), 'closed');
       const cust = customerRow(db.get('SELECT * FROM customers WHERE phone = ?', phone));
       const fee0 = Math.max(0, Number(settings.deliveryFee) || 0);
       const useFree = !!body.useFree && cust.freeDeliveries > 0 && fee0 > 0;
@@ -252,7 +252,17 @@ export function createOrderService({ db, hub, push, log }) {
         if (!['new', 'awaiting_payment'].includes(o.status)) throw new CheckoutError('ما تقدر تلغي الطلب بعد ما يستلمه السائق، تواصل مع الإدارة');
       } else if (!ACTIVE.includes(o.status) && o.status !== 'awaiting_payment') throw new CheckoutError('الطلب منتهي');
       o.status = 'cancelled'; o.log = logAdd(o, 'cancelled'); o.cancelledBy = by.role;
+      /* المبلغ مدفوع مسبقاً (حوالة أو دفع إلكتروني مؤكد): لازم يرجع للعميل */
+      if (o.payment === 'bank' || (o.payment === 'online' && o.paymentStatus === 'paid')) o.refundDue = round2(o.total);
       refundPerks(o);
+      return o;
+    });
+  }
+
+  function markRefunded(id) {
+    return mutate(id, (o) => {
+      if (!o.refundDue) throw new CheckoutError('الطلب ما عليه مبلغ مستحق للاسترجاع');
+      o.refundedAt = now(); o.refundedAmount = o.refundDue; delete o.refundDue;
       return o;
     });
   }
@@ -268,9 +278,14 @@ export function createOrderService({ db, hub, push, log }) {
     });
   }
 
-  function settleDriver(driverId) {
+  /* expected: المبلغ اللي شافته الإدارة وأكدت استلامه. لو تغيّر (سائق وصّل طلب جديد بنفس اللحظة) نرفض */
+  function settleDriver(driverId, expected) {
     const t = now();
-    const r = db.run("UPDATE orders SET settled = 1, settled_at = ? WHERE driver_id = ? AND status = 'delivered' AND settled = 0", t, driverId);
+    const r = db.tx(() => {
+      const cur = round2(db.get("SELECT COALESCE(SUM(total),0) s FROM orders WHERE driver_id = ? AND status = 'delivered' AND settled = 0", driverId).s);
+      if (expected != null && Math.abs(cur - round2(expected)) > 0.009) throw new CheckoutError(`المبلغ تغيّر إلى ${cur} ر.س (وصل طلب جديد). راجع المبلغ وأكد مرة ثانية`, 'amount_changed');
+      return db.run("UPDATE orders SET settled = 1, settled_at = ? WHERE driver_id = ? AND status = 'delivered' AND settled = 0", t, driverId);
+    });
     hub.admins({ type: 'order' });
     hub.driver(driverId, { type: 'order' });
     return r.changes;
@@ -303,6 +318,21 @@ export function createOrderService({ db, hub, push, log }) {
     }
     return list.length;
   }
+  /* دفع تأكد من البوابة بعد ما انلغت طلباته: نسجّل المبلغ كمستحق للاسترجاع وننبه الإدارة */
+  function markLatePaid(group) {
+    const list = db.all("SELECT id FROM orders WHERE group_code = ? AND status = 'cancelled' AND payment = 'online' AND payment_status != 'paid'", group);
+    let sum = 0, code = group;
+    for (const { id } of list) {
+      const o = mutate(id, (o) => { o.paymentStatus = 'paid'; o.refundDue = round2(o.total); o.latePayment = true; return o; });
+      sum += o.total; code = o.code;
+    }
+    if (list.length) {
+      hub.admins({ type: 'notify', text: `💸 دفع وصل لطلب ملغي #${group} — استرجع ${round2(sum)} ر.س للعميل`, sound: true });
+      push.admins({ title: 'مبلغ يحتاج استرجاع 💸', body: `العميل دفع ${round2(sum)} ر.س لطلب ملغي #${code}`, url: '/?r=admin', tag: 'refund-' + group });
+    }
+    return list.length;
+  }
+
   function markGroupFailed(group) {
     const list = db.all("SELECT id FROM orders WHERE group_code = ? AND status = 'awaiting_payment'", group);
     for (const { id } of list) {
@@ -314,5 +344,5 @@ export function createOrderService({ db, hub, push, log }) {
     }
   }
 
-  return { quote, place, placeCustom, claim, driverAdvance, adminAssign, adminDeliver, cancel, setCustomPrice, settleDriver, markGroupPaid, markGroupFailed, announce };
+  return { quote, place, placeCustom, claim, driverAdvance, adminAssign, adminDeliver, cancel, markRefunded, setCustomPrice, settleDriver, markGroupPaid, markGroupFailed, markLatePaid, announce, mutate };
 }

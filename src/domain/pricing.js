@@ -1,5 +1,5 @@
 /* منطق التسعير والكوبونات — دوال صافية بدون قاعدة بيانات، ومغطّاة باختبارات وحدة */
-import { MAX_CART_STORES, round2, unitPrice } from '../../public/shared/constants.js';
+import { MAX_CART_STORES, round2, unitPrice, storeOpenNow, hoursLabel } from '../../public/shared/constants.js';
 
 export class CheckoutError extends Error {
   constructor(message, code = 'invalid') { super(message); this.code = code; }
@@ -113,16 +113,18 @@ export function computeCheckout({ baskets, settings, coupon = null, couponUsedBy
 }
 
 /* تحقق شروط الطلب قبل الإنشاء */
-export function validateForPlacement(cx, settings) {
+export function validateForPlacement(cx, settings, now = new Date()) {
   if (!cx.rows.length) throw new CheckoutError('السلة فاضية', 'empty');
-  const closed = cx.rows.find((r) => r.bk.s.open === false);
-  if (closed) throw new CheckoutError(closed.bk.s.name + ' مغلق الآن', 'closed');
+  const closed = cx.rows.find((r) => !storeOpenNow(r.bk.s, now));
+  if (closed) throw new CheckoutError(closedMsg(closed.bk.s), 'closed');
   const min = Number(settings.minOrder) || 0;
   if (min > 0) {
     const below = cx.rows.find((r) => r.bk.sub < min);
     if (below) throw new CheckoutError('الحد الأدنى لطلب ' + below.bk.s.name + ': ' + fmt(min), 'min_order');
   }
 }
+
+export const closedMsg = (s) => s.name + ' مغلق الآن' + (s.open !== false && hoursLabel(s) ? ` — أوقات العمل ${hoursLabel(s)}` : '');
 
 /* برنامج الولاء: هل يستحق العميل توصيلة مجانية بعد هذا التوصيل؟ */
 export function loyaltyEarned(settings, deliveredCountAfter) {

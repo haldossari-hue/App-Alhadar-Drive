@@ -42,6 +42,10 @@ export async function createPayment({ paymentId, amount, description }) {
   throw new Error('no payment provider');
 }
 
+/* للاختبارات فقط: محاكاة رد البوابة التجريبية */
+let fakeStatus = null;
+export const __setFakeStatus = (fn) => { fakeStatus = fn; };
+
 /* يسأل البوابة عن حالة الدفع: 'paid' | 'failed' | 'pending' مع المبلغ المدفوع */
 export async function fetchPaymentStatus(payment) {
   if (payment.provider === 'moyasar') {
@@ -52,6 +56,6 @@ export async function fetchPaymentStatus(payment) {
     if (j.status === 'expired' || j.status === 'canceled' || j.status === 'failed') return { status: 'failed' };
     return { status: 'pending' };
   }
-  if (payment.provider === 'fake') return { status: payment._fakeResult || 'pending', amount: payment.amount };
+  if (payment.provider === 'fake') return { status: payment._fakeResult || (fakeStatus ? fakeStatus(payment) : 'pending'), amount: payment.amount };
   return { status: 'pending' };
 }

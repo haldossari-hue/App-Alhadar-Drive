@@ -365,3 +365,10 @@ details summary{cursor:pointer;margin-top:8px;font-size:14px;font-weight:500}
 .linkbtn:disabled{color:var(--muted);text-decoration:none}
 .errbox{background:var(--danger-soft);color:var(--danger)}
 .offline{position:fixed;top:calc(62px + env(safe-area-inset-top,0px));left:50%;transform:translateX(-50%);z-index:30;background:var(--danger);color:#fff;border-radius:999px;padding:4px 14px;font-size:12.5px}
+
+.leglinks{margin-top:8px;font-size:12px}
+.leglinks a{color:var(--muted)}
+.legaltxt{white-space:pre-wrap;line-height:1.9;font-size:14.5px}
+.srow.closed{opacity:.72}
+details.card summary{margin-top:0}
+input[type=time]{width:100%;padding:11px 13px;border-radius:12px;border:1px solid var(--line);background:var(--surface)}
