@@ -272,7 +272,9 @@ export function createAssistant({ db, hub, push, log, client, legalTexts }) {
   function transcript(threadId) {
     const t = db.get('SELECT messages FROM assistant_threads WHERE id = ?', String(threadId));
     if (!t) return [];
-    return JSON.parse(t.messages).map((m) => ({
+    const st = JSON.parse(t.messages);
+    if (st && st.v === 'local') return st.log; /* محادثة المساعد المجاني */
+    return st.map((m) => ({
       from: m.role === 'user' ? 'customer' : 'assistant',
       text: typeof m.content === 'string' ? m.content : textOf(m.content),
     })).filter((m) => m.text);

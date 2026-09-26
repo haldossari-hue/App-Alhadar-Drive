@@ -55,15 +55,15 @@ before(async () => {
 });
 after(async () => { await app.close(); await app2.close(); fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(dir2, { recursive: true, force: true }); });
 
-test('بدون مفتاح API: المساعد معطّل، والنموذج البديل للبلاغات يشتغل', async () => {
-  assert.equal((await ok(req(app2, 'GET', '/api/assistant/status'))).enabled, false);
-  const r = await req(app2, 'POST', '/api/assistant/chat', { message: 'هلا' });
-  assert.equal(r.status, 503);
+test('بدون مفتاح API: يشتغل المساعد المجاني، والنموذج البديل للبلاغات يشتغل', async () => {
+  const st = await ok(req(app2, 'GET', '/api/assistant/status'));
+  assert.deepEqual(st, { enabled: true, mode: 'free' });
   const bad = await req(app2, 'POST', '/api/tickets', { details: 'x', phone: '12' });
   assert.equal(bad.status, 400);
   const t = await ok(req(app2, 'POST', '/api/tickets', { category: 'complaint', subject: 'تأخر', details: 'الطلب تأخر ساعة', phone: '0551112222', name: 'سعد' }));
   assert.match(t.number, /^\d{5}$/);
   assert.ok(pushes.some(([k, p]) => k === 'admins' && /شكوى جديدة/.test(p.title)));
+  assert.equal((await ok(req(app, 'GET', '/api/assistant/status'))).mode, 'ai', 'مع المفتاح يصير ذكي');
 });
 
 test('الإعداد: النموذج والتعليمات المخزنة مؤقتاً والأدوات الصارمة والنموذج البديل عند الرفض', async () => {

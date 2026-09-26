@@ -85,7 +85,7 @@ function pimg(p, cls) {
 /* ============ التحميل والتحديث ============ */
 async function loadBoot() {
   S.boot = await api('GET', '/api/bootstrap');
-  if (S.aiEnabled == null) api('GET', '/api/assistant/status').then((r) => { S.aiEnabled = r.enabled; soft(); }).catch(() => { S.aiEnabled = false; });
+  if (S.aiEnabled == null) api('GET', '/api/assistant/status').then((r) => { S.aiEnabled = r.enabled; S.aiMode = r.mode; soft(); }).catch(() => { S.aiEnabled = false; });
 }
 async function loadRole() {
   if (!loggedIn()) return;
@@ -883,19 +883,21 @@ function aiButton() {
 const fmtMsg = (t) => esc(t).replace(/\n/g, '<br>');
 function shAi() {
   const a = aiState();
+  const lastQuick = !S.aiBusy && a.msgs.length && a.msgs[a.msgs.length - 1].from === 'ai' ? a.msgs[a.msgs.length - 1].quick || [] : [];
   const body = a.msgs.length
     ? a.msgs.map((m) => `<div class="cbub ${m.from === 'me' ? 'me' : ''}"><div class="cb-inner">${m.from === 'me' ? '' : '<small>🤖 المساعد</small>'}<div>${fmtMsg(m.text)}</div>
         ${(m.tickets || []).map((t) => `<div class="tkcard">✅ تم رفع ${esc(t.category)} برقم <b dir="ltr">#${esc(t.number)}</b><br><small>${esc(t.subject)}</small></div>`).join('')}</div></div>`).join('')
     : `<div class="aiwelcome">👋 هلا فيك! أنا مساعد الهدار درايف.<br>اسألني عن المتاجر والأسعار والتوصيل وطلباتك، أو ارفع لي بلاغ أو ملاحظة وأوصلها للإدارة.</div>`;
   return shHead('🤖 مساعد الهدار درايف') + `
     <div id="chatList" class="chatlist ailist">${body}${S.aiBusy ? '<div class="cbub"><div class="cb-inner typing"><span></span><span></span><span></span></div></div>' : ''}</div>
+    ${lastQuick.length ? `<div class="chips aisug">${lastQuick.map((q) => `<button class="chip" data-act="aiAsk" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>` : ''}
     ${!a.msgs.length && !S.aiBusy ? `<div class="chips aisug">${AI_SUGGEST.map((q) => `<button class="chip" data-act="aiAsk" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>` : ''}
     <div class="chatrow"><input id="aiInput" placeholder="اكتب سؤالك…" autocomplete="off" maxlength="2000" ${S.aiBusy ? 'disabled' : ''}><button class="btn sm dark" data-act="aiSend" ${S.aiBusy ? 'disabled' : ''}>إرسال</button></div>
     <div class="row" style="justify-content:space-between;margin-top:10px">
       <button class="linkbtn" data-act="aiNew">🔄 محادثة جديدة</button>
       <button class="linkbtn" data-act="openTicketForm">📩 رفع بلاغ مباشرة</button>
     </div>
-    <p class="hint" style="text-align:center;margin:6px 0 0">المساعد يعتمد على الذكاء الاصطناعي وقد يخطئ أحياناً. للأمور المهمة ارفع بلاغ للإدارة.</p>`;
+    <p class="hint" style="text-align:center;margin:6px 0 0">${S.aiMode === 'ai' ? 'المساعد يعتمد على الذكاء الاصطناعي وقد يخطئ أحياناً. للأمور المهمة ارفع بلاغ للإدارة.' : 'المساعد يجاوب من بيانات التطبيق مباشرة. إذا ما فهم سؤالك، ارفعه للإدارة.'}</p>`;
 }
 function shTicketForm() {
   const signed = loggedIn() && S.customer;
@@ -919,7 +921,7 @@ async function aiSend(text) {
     const r = await call('POST', '/api/assistant/chat', { threadId: a.threadId, token: a.token, message: text });
     if (r.threadId !== a.threadId) { a.threadId = r.threadId; a.token = r.token || a.token; }
     if (r.token) a.token = r.token;
-    a.msgs.push({ from: 'ai', text: r.reply, tickets: r.tickets || [] });
+    a.msgs.push({ from: 'ai', text: r.reply, tickets: r.tickets || [], quick: r.quick || [] });
   } catch (err) {
     a.msgs.push({ from: 'ai', text: err.code === 'too_long' ? 'المحادثة صارت طويلة، اضغط "محادثة جديدة" ونكمل.' : (err.message || 'صار خطأ، حاول مرة ثانية') + (err.status === 502 || err.status === 503 ? '\nتقدر ترفع بلاغك مباشرة من الرابط تحت.' : '') });
   }

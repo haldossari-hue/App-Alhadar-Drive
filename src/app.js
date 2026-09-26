@@ -16,6 +16,7 @@ import { importBundle } from './importer.js';
 import { LEGAL_DEFAULTS } from './legal-defaults.js';
 import { toCsv, parseCsv } from './csv.js';
 import { createAssistant, makeClient, TICKET_CATS } from './services/assistant.js';
+import { createLocalAssistant } from './services/assistant-local.js';
 import {
   insertProduct, loadStores, loadStore, saveStore, getCoupon, couponRow, customerRow, driverRow, getOrder, orderRow, viewOrder,
 } from './repo.js';
@@ -134,13 +135,18 @@ export async function buildApp(opts = {}) {
 
   /* ============ المساعد الذكي والبلاغات ============ */
   const assistant = createAssistant({ db, hub, push, log: app.log, client: opts.anthropic !== undefined ? opts.anthropic : await makeClient(), legalTexts });
-  app.get('/api/assistant/status', async () => ({ enabled: assistant.enabled() }));
+  /* بدون مفتاح Claude: المساعد المجاني المدمج (كلمات مفتاحية + بيانات التطبيق مباشرة) */
+  const freeAssistant = createLocalAssistant({ db, createTicket: assistant.createTicket, legalTexts });
+  app.get('/api/assistant/status', async () => ({ enabled: true, mode: assistant.enabled() ? 'ai' : 'free' }));
   app.post('/api/assistant/chat', async (req) => {
     const b = req.body || {};
-    limit('ai-ip:' + req.ip, 40, 600e3);
-    if (b.threadId) limit('ai-thread:' + b.threadId, 20, 300e3);
+    /* المساعد الذكي له تكلفة لكل رسالة فحده أقل؛ والمجاني حده أعلى (عملاء كثير يشتركون بنفس عنوان IP عند شركات الاتصال) */
+    const paid = assistant.enabled();
+    limit('ai-ip:' + req.ip, paid ? 60 : 200, 600e3);
+    if (b.threadId) limit('ai-thread:' + b.threadId, paid ? 20 : 40, 300e3);
     const phone = req.who && req.who.role === 'customer' ? req.who.sub : null;
-    try { return await assistant.chat({ threadId: b.threadId, token: b.token, message: b.message, phone, onlinePay: onlinePay() }); }
+    const bot = assistant.enabled() ? assistant : freeAssistant;
+    try { return await bot.chat({ threadId: b.threadId, token: b.token, message: b.message, phone, onlinePay: onlinePay() }); }
     catch (e) {
       if (e.code === 'disabled') throw httpError(503, e.message, 'disabled');
       if (e.code === 'upstream') throw httpError(502, e.message, 'upstream');
