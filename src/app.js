@@ -15,6 +15,7 @@ import { createOrderService, CheckoutError } from './orders.js';
 import { importBundle } from './importer.js';
 import { LEGAL_DEFAULTS } from './legal-defaults.js';
 import { toCsv, parseCsv } from './csv.js';
+import { createAssistant, makeClient, TICKET_CATS } from './services/assistant.js';
 import {
   insertProduct, loadStores, loadStore, saveStore, getCoupon, couponRow, customerRow, driverRow, getOrder, orderRow, viewOrder,
 } from './repo.js';
@@ -57,7 +58,7 @@ export async function buildApp(opts = {}) {
   app.setErrorHandler((err, req, reply) => {
     if (err instanceof CheckoutError) return reply.code(err.code === 'not_found' ? 404 : err.code === 'forbidden' ? 403 : err.code === 'taken' ? 409 : 400).send({ error: err.message, code: err.code });
     /* 502: خدمة خارجية (SMS أو بوابة الدفع) ما ردّت — رسالتنا العربية مقصودة وتوصل للمستخدم */
-    if (err.statusCode && (err.statusCode < 500 || err.statusCode === 502)) return reply.code(err.statusCode).send({ error: err.message, code: err.code || 'error' });
+    if (err.statusCode && (err.statusCode < 500 || err.statusCode === 502 || err.statusCode === 503)) return reply.code(err.statusCode).send({ error: err.message, code: err.code || 'error' });
     req.log.error(err);
     reply.code(500).send({ error: 'صار خطأ غير متوقع، حاول مرة أخرى', code: 'server' });
   });
@@ -130,6 +131,50 @@ export async function buildApp(opts = {}) {
     coupons: publicCoupons(),
     vapidKey: push.publicKey,
   }));
+
+  /* ============ المساعد الذكي والبلاغات ============ */
+  const assistant = createAssistant({ db, hub, push, log: app.log, client: opts.anthropic !== undefined ? opts.anthropic : await makeClient(), legalTexts });
+  app.get('/api/assistant/status', async () => ({ enabled: assistant.enabled() }));
+  app.post('/api/assistant/chat', async (req) => {
+    const b = req.body || {};
+    limit('ai-ip:' + req.ip, 40, 600e3);
+    if (b.threadId) limit('ai-thread:' + b.threadId, 20, 300e3);
+    const phone = req.who && req.who.role === 'customer' ? req.who.sub : null;
+    try { return await assistant.chat({ threadId: b.threadId, token: b.token, message: b.message, phone, onlinePay: onlinePay() }); }
+    catch (e) {
+      if (e.code === 'disabled') throw httpError(503, e.message, 'disabled');
+      if (e.code === 'upstream') throw httpError(502, e.message, 'upstream');
+      if (e.code === 'too_long' || e.code === 'empty') throw httpError(400, e.message, e.code);
+      throw e;
+    }
+  });
+  /* نموذج البلاغ البديل (يشتغل حتى لو المساعد غير متاح) */
+  app.post('/api/tickets', async (req) => {
+    limit('ticket-ip:' + req.ip, 8, 3600e3);
+    const b = req.body || {};
+    const phone = req.who && req.who.role === 'customer' ? req.who.sub : null;
+    if (!phone && !normalizePhone(b.phone)) throw httpError(400, 'اكتب رقم جوال صحيح عشان نتواصل معك');
+    if (!String(b.details || '').trim()) throw httpError(400, 'اكتب تفاصيل البلاغ');
+    const t = assistant.createTicket({ category: b.category, subject: b.subject, details: b.details, orderCode: b.orderCode, name: b.name, phone: phone || b.phone, customerPhone: phone, source: 'form' });
+    return { number: t.number };
+  });
+  const ticketOut = (r) => ({ id: r.id, number: r.number, category: r.category, categoryLabel: TICKET_CATS[r.category], subject: r.subject, details: r.details, orderCode: r.order_code, name: r.name, phone: r.phone, customerPhone: r.customer_phone, status: r.status, adminNote: r.admin_note, source: r.source, hasTranscript: !!r.thread_id, createdAt: r.created_at, closedAt: r.closed_at });
+  app.get('/api/admin/tickets', { preHandler: isAdmin }, async () =>
+    db.all("SELECT * FROM tickets ORDER BY (status = 'open') DESC, created_at DESC LIMIT 300").map(ticketOut));
+  app.patch('/api/admin/tickets/:id', { preHandler: isAdmin }, async (req) => {
+    const b = req.body || {};
+    const t = db.get('SELECT * FROM tickets WHERE id = ?', req.params.id);
+    if (!t) throw httpError(404, 'البلاغ غير موجود');
+    const status = b.status === 'closed' ? 'closed' : b.status === 'open' ? 'open' : t.status;
+    db.run('UPDATE tickets SET status = ?, admin_note = ?, closed_at = ? WHERE id = ?', status, b.adminNote !== undefined ? String(b.adminNote).slice(0, 2000) : t.admin_note, status === 'closed' ? (t.closed_at || Date.now()) : null, t.id);
+    hub.admins({ type: 'ticket' });
+    return ticketOut(db.get('SELECT * FROM tickets WHERE id = ?', t.id));
+  });
+  app.get('/api/admin/tickets/:id/transcript', { preHandler: isAdmin }, async (req) => {
+    const t = db.get('SELECT thread_id FROM tickets WHERE id = ?', req.params.id);
+    if (!t || !t.thread_id) throw httpError(404, 'ما فيه محادثة لهذا البلاغ');
+    return assistant.transcript(t.thread_id);
+  });
 
   /* ============ وضع التجربة: طلب بدون تسجيل، ما يروح للسائقين ============ */
   const trialOn = () => db.settings().trialMode !== false;
@@ -407,6 +452,7 @@ export async function buildApp(opts = {}) {
       stores: loadStores(db),
       settings: adminSettings(),
       otp: otpPending(),
+      openTickets: db.get("SELECT COUNT(*) n FROM tickets WHERE status = 'open'").n,
       cashWithDrivers: round2(db.get("SELECT COALESCE(SUM(total),0) s FROM orders WHERE status = 'delivered' AND settled = 0").s),
     };
   });

@@ -83,7 +83,10 @@ function pimg(p, cls) {
 }
 
 /* ============ التحميل والتحديث ============ */
-async function loadBoot() { S.boot = await api('GET', '/api/bootstrap'); }
+async function loadBoot() {
+  S.boot = await api('GET', '/api/bootstrap');
+  if (S.aiEnabled == null) api('GET', '/api/assistant/status').then((r) => { S.aiEnabled = r.enabled; soft(); }).catch(() => { S.aiEnabled = false; });
+}
 async function loadRole() {
   if (!loggedIn()) return;
   if (S.role === 'customer') {
@@ -109,6 +112,7 @@ function refreshSoon(what = 'role') {
 
 function onEvent(ev) {
   if (ev.type === 'order' || ev.type === 'drivers' || ev.type === 'me' || ev.type === 'otp') refreshSoon();
+  else if (ev.type === 'ticket') { refreshSoon(); if (S.role === 'admin') loadTickets(); }
   else if (ev.type === 'catalog') refreshSoon('all');
   else if (ev.type === 'notify') {
     if (ev.onlineOnly && S.role === 'driver' && S.driver && !S.driver.online) return;
@@ -165,7 +169,7 @@ function render() {
   if (S.role === 'customer') {
     if (!loggedIn() && needsLogin(S.view)) app.innerHTML = topBar() + vCustAuth() + nav();
     else if (loggedIn() && !S.customer) app.innerHTML = topBar() + `<div class="wrap"><div class="empty"><span class="e">👤</span>جارِ تحميل حسابك…</div></div>`;
-    else app.innerHTML = topBar() + vCustomer() + cartBar() + nav();
+    else app.innerHTML = topBar() + vCustomer() + cartBar() + aiButton() + nav();
   } else if (S.role === 'driver') app.innerHTML = topBar() + vDriver() + (loggedIn() && S.driver ? nav() : '');
   else app.innerHTML = topBar() + vAdmin() + (loggedIn() && S.adm ? nav() : '');
   if (S.role === 'customer' && S.view.name === 'home' && S.q) updateResults();
@@ -246,7 +250,7 @@ function nav() {
     items = [['available', '📦', 'متاحة', S.dOrders.available.length], ['mine', '🛵', 'طلباتي', S.dOrders.mine.length], ['done', '💵', 'المنجزة']];
   } else {
     const nw = S.adm.orders.filter((o) => o.status === 'new').length + ((S.adm.otp || []).filter((r) => !r.waSentAt).length);
-    items = [['aorders', '🧾', 'الطلبات', nw], ['coupons', '🎟️', 'كوبونات'], ['prices', '🏷️', 'الأسعار'], ['stores', '🏪', 'المتاجر'], ['drivers', '🛵', 'السائقون'], ['settings', '⚙️', 'الإعدادات']];
+    items = [['aorders', '🧾', 'الطلبات', nw], ['tickets', '📩', 'البلاغات', S.adm.openTickets || 0], ['coupons', '🎟️', 'كوبونات'], ['prices', '🏷️', 'الأسعار'], ['stores', '🏪', 'المتاجر'], ['drivers', '🛵', 'السائقون'], ['settings', '⚙️', 'الإعدادات']];
   }
   const cur = S.view.name;
   return `<nav class="nav"><div class="in">${items.map(([v, e, t, b]) => {
@@ -620,6 +624,7 @@ function vAdmin() {
   if (v === 'stores') return vStores();
   if (v === 'drivers') return vDrivers();
   if (v === 'settings') return vSettings();
+  if (v === 'tickets') return vTickets();
   return vAOrders();
 }
 function vAOrders() {
@@ -824,12 +829,12 @@ function askConfirm(msg, onYes, cls) { S._confirmPrev = S.sheet; S._confirmMsg =
 function renderSheet() {
   const el = document.getElementById('sheet'); const s = S.sheet;
   if (!s) { el.innerHTML = ''; return; }
-  const fns = { cart: shCart, checkout: shCheckout, store: shStore, driver: shDriver, coupon: shCoupon, confirm: shConfirm, chat: shChat, recover: shRecover };
+  const fns = { ai: shAi, ticketForm: shTicketForm, transcript: shTranscript, cart: shCart, checkout: shCheckout, store: shStore, driver: shDriver, coupon: shCoupon, confirm: shConfirm, chat: shChat, recover: shRecover };
   const prevScroll = el.querySelector('.sh') ? el.querySelector('.sh').scrollTop : 0;
   el.innerHTML = `<div class="bd" data-act="bdClose"><div class="sh" role="dialog" aria-modal="true">${fns[s.type]()}</div></div>`;
   const sh = el.querySelector('.sh'); if (sh && s.keepScroll) sh.scrollTop = prevScroll;
   s.keepScroll = true;
-  if (s.type === 'chat') { const c = document.getElementById('chatList'); if (c) c.scrollTop = c.scrollHeight; }
+  if (s.type === 'chat' || s.type === 'ai' || s.type === 'transcript') { const c = document.getElementById('chatList'); if (c) c.scrollTop = c.scrollHeight; }
 }
 const shHead = (t, closeAct = 'close') => `<div class="grab"></div><div class="shtitle"><h3>${t}</h3><button class="x" data-act="${closeAct}" aria-label="إغلاق">✕</button></div>`;
 function shRecover() {
@@ -866,6 +871,100 @@ function shChat() {
     <div id="chatList" class="chatlist">${!msgs ? '<p class="muted" style="text-align:center">جارِ التحميل…</p>' : msgs.length ? msgs.map((m) => chatBubble(m, me)).join('') : '<p class="muted" style="text-align:center">ابدأ المحادثة…</p>'}</div>
     <div class="chatrow"><input id="chatInput" placeholder="اكتب رسالتك…" autocomplete="off"><button class="btn sm dark" data-act="sendChat" data-id="${oid}">إرسال</button></div>`;
 }
+/* ============ المساعد الذكي ============ */
+const AI_SUGGEST = ['وش المتاجر المفتوحة الحين؟', 'كم رسوم التوصيل؟', 'وين طلبي؟', 'أبي أرفع شكوى'];
+const aiState = () => { S.ai = S.ai || lsg('hd.ai', { threadId: null, token: null, msgs: [] }); return S.ai; };
+const aiSave = () => { const a = aiState(); lss('hd.ai', { threadId: a.threadId, token: a.token, msgs: a.msgs.slice(-40) }); };
+function aiButton() {
+  if (S.aiEnabled == null) return '';
+  const raised = ['home', 'cat', 'store'].includes(S.view.name) && cartBaskets().some((b) => b.n);
+  return `<button class="aibtn${raised ? ' raised' : ''}" data-act="openAi" aria-label="المساعد الذكي">💬<span>${S.aiEnabled ? 'المساعد' : 'تواصل معنا'}</span></button>`;
+}
+const fmtMsg = (t) => esc(t).replace(/\n/g, '<br>');
+function shAi() {
+  const a = aiState();
+  const body = a.msgs.length
+    ? a.msgs.map((m) => `<div class="cbub ${m.from === 'me' ? 'me' : ''}"><div class="cb-inner">${m.from === 'me' ? '' : '<small>🤖 المساعد</small>'}<div>${fmtMsg(m.text)}</div>
+        ${(m.tickets || []).map((t) => `<div class="tkcard">✅ تم رفع ${esc(t.category)} برقم <b dir="ltr">#${esc(t.number)}</b><br><small>${esc(t.subject)}</small></div>`).join('')}</div></div>`).join('')
+    : `<div class="aiwelcome">👋 هلا فيك! أنا مساعد الهدار درايف.<br>اسألني عن المتاجر والأسعار والتوصيل وطلباتك، أو ارفع لي بلاغ أو ملاحظة وأوصلها للإدارة.</div>`;
+  return shHead('🤖 مساعد الهدار درايف') + `
+    <div id="chatList" class="chatlist ailist">${body}${S.aiBusy ? '<div class="cbub"><div class="cb-inner typing"><span></span><span></span><span></span></div></div>' : ''}</div>
+    ${!a.msgs.length && !S.aiBusy ? `<div class="chips aisug">${AI_SUGGEST.map((q) => `<button class="chip" data-act="aiAsk" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>` : ''}
+    <div class="chatrow"><input id="aiInput" placeholder="اكتب سؤالك…" autocomplete="off" maxlength="2000" ${S.aiBusy ? 'disabled' : ''}><button class="btn sm dark" data-act="aiSend" ${S.aiBusy ? 'disabled' : ''}>إرسال</button></div>
+    <div class="row" style="justify-content:space-between;margin-top:10px">
+      <button class="linkbtn" data-act="aiNew">🔄 محادثة جديدة</button>
+      <button class="linkbtn" data-act="openTicketForm">📩 رفع بلاغ مباشرة</button>
+    </div>
+    <p class="hint" style="text-align:center;margin:6px 0 0">المساعد يعتمد على الذكاء الاصطناعي وقد يخطئ أحياناً. للأمور المهمة ارفع بلاغ للإدارة.</p>`;
+}
+function shTicketForm() {
+  const signed = loggedIn() && S.customer;
+  const cats = { complaint: 'شكوى', report: 'بلاغ عن مشكلة', suggestion: 'اقتراح أو ملاحظة', inquiry: 'استفسار', other: 'أخرى' };
+  return shHead('📩 رفع بلاغ للإدارة') + `
+    <div class="field"><label>النوع</label><select id="tk_cat">${Object.entries(cats).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
+    <div class="field"><label>العنوان</label><input id="tk_subject" maxlength="100" placeholder="مثال: تأخر الطلب"></div>
+    <div class="field"><label>التفاصيل</label><textarea id="tk_details" maxlength="4000" placeholder="اكتب وش صار بالتفصيل"></textarea></div>
+    <div class="field"><label>رقم الطلب (اختياري)</label><input id="tk_order" dir="ltr" inputmode="numeric" placeholder="123456"></div>
+    ${signed ? '' : `<div class="two"><div class="field"><label>الاسم</label><input id="tk_name" value="${esc(lsg('hd.trialName', ''))}"></div>
+      <div class="field"><label>الجوال</label><input id="tk_phone" dir="ltr" inputmode="tel" placeholder="05xxxxxxxx" value="${esc(lsg('hd.trialPhone', ''))}"></div></div>`}
+    <button class="btn block" data-act="sendTicket">إرسال للإدارة</button>
+    ${S.aiEnabled ? '<button class="btn line block" style="margin-top:8px" data-act="openAi">رجوع للمساعد</button>' : ''}`;
+}
+async function aiSend(text) {
+  const a = aiState();
+  text = String(text || '').trim();
+  if (!text || S.aiBusy) return;
+  a.msgs.push({ from: 'me', text }); S.aiBusy = true; aiSave(); renderSheet();
+  try {
+    const r = await call('POST', '/api/assistant/chat', { threadId: a.threadId, token: a.token, message: text });
+    if (r.threadId !== a.threadId) { a.threadId = r.threadId; a.token = r.token || a.token; }
+    if (r.token) a.token = r.token;
+    a.msgs.push({ from: 'ai', text: r.reply, tickets: r.tickets || [] });
+  } catch (err) {
+    a.msgs.push({ from: 'ai', text: err.code === 'too_long' ? 'المحادثة صارت طويلة، اضغط "محادثة جديدة" ونكمل.' : (err.message || 'صار خطأ، حاول مرة ثانية') + (err.status === 502 || err.status === 503 ? '\nتقدر ترفع بلاغك مباشرة من الرابط تحت.' : '') });
+  }
+  S.aiBusy = false; aiSave();
+  if (S.sheet && S.sheet.type === 'ai') { renderSheet(); const i = document.getElementById('aiInput'); if (i) i.focus(); }
+}
+
+/* ============ البلاغات في لوحة الإدارة ============ */
+async function loadTickets() {
+  try { S.tickets = await call('GET', '/api/admin/tickets'); } catch (e) { S.tickets = S.tickets || []; }
+  if (S.view.name === 'tickets') soft();
+}
+function vTickets() {
+  if (!S.tickets) { loadTickets(); return `<div class="wrap"><div class="empty"><span class="e">📩</span>جارِ التحميل…</div></div>`; }
+  const f = S.ticketFilter || 'open';
+  const list = S.tickets.filter((t) => t.status === f);
+  return `<div class="wrap wide">
+    <h2>البلاغات والملاحظات</h2>
+    <div class="chips"><button class="chip ${f === 'open' ? 'on' : ''}" data-act="tkFilter" data-v="open">المفتوحة (${S.tickets.filter((t) => t.status === 'open').length})</button><button class="chip ${f === 'closed' ? 'on' : ''}" data-act="tkFilter" data-v="closed">المقفلة</button></div>
+    ${list.length ? list.map(ticketCard).join('') : `<div class="empty"><span class="e">📩</span>${f === 'open' ? 'ما فيه بلاغات مفتوحة 👌' : 'لا يوجد.'}</div>`}
+  </div>`;
+}
+function ticketCard(t) {
+  const ph = t.customerPhone || t.phone;
+  const pill = { complaint: 'off', report: 'warn', suggestion: 'on', inquiry: 'mute', other: 'mute' }[t.category] || 'mute';
+  return `<div class="card">
+    <div class="oh"><b>#${esc(t.number)}</b><span class="pill ${pill}">${esc(t.categoryLabel)}</span><small>${ago(t.createdAt)}</small></div>
+    <div class="ol"><b>${esc(t.subject)}</b></div>
+    <div class="ol" style="white-space:pre-wrap">${esc(t.details)}</div>
+    ${t.orderCode ? `<div class="ol">🧾 رقم الطلب: <b dir="ltr">#${esc(t.orderCode)}</b></div>` : ''}
+    <div class="ol">👤 ${esc(t.name || (t.customerPhone ? 'عميل مسجّل' : ''))}${ph ? ` — <a href="tel:${esc(ph)}">${esc(ph)}</a> — <a href="${waLink(ph)}" target="_blank" rel="noopener">واتساب</a>` : ''}</div>
+    <div class="ol"><small class="muted">${t.source === 'assistant' ? '🤖 عن طريق المساعد الذكي' : '📝 من نموذج البلاغ'}${t.closedAt ? ' · أُقفل ' + ago(t.closedAt) : ''}</small></div>
+    <div class="field" style="margin-top:8px"><textarea id="tn_${t.id}" placeholder="ملاحظة داخلية (وش سويت؟)" style="min-height:56px">${esc(t.adminNote || '')}</textarea></div>
+    <div class="acts">
+      ${t.status === 'open' ? `<button class="btn sm palm" data-act="tkSet" data-id="${t.id}" data-v="closed">✔️ تم الحل وإقفال</button>` : `<button class="btn sm line" data-act="tkSet" data-id="${t.id}" data-v="open">إعادة فتح</button>`}
+      <button class="btn sm line" data-act="tkSet" data-id="${t.id}" data-v="">حفظ الملاحظة</button>
+      ${t.hasTranscript ? `<button class="btn sm dark" data-act="tkTranscript" data-id="${t.id}">💬 المحادثة</button>` : ''}
+    </div>
+  </div>`;
+}
+function shTranscript() {
+  const tr = S.transcript;
+  return shHead('💬 محادثة العميل مع المساعد') + `<div id="chatList" class="chatlist">${!tr ? '<p class="muted">جارِ التحميل…</p>' : tr.map((m) => `<div class="cbub ${m.from === 'customer' ? '' : 'me'}"><div class="cb-inner"><small>${m.from === 'customer' ? 'العميل' : '🤖 المساعد'}</small><div>${fmtMsg(m.text)}</div></div></div>`).join('')}</div>`;
+}
+
 function chatBubble(m, me) {
   const mine = m.from === me;
   const label = { customer: 'العميل', driver: 'السائق', admin: 'الإدارة' }[m.from] || m.from;
@@ -1162,6 +1261,28 @@ function draftCustomer() {
 }
 
 const ACT = {
+  openAi() { if (!S.aiEnabled) { openSheet({ type: 'ticketForm' }); return; } openSheet({ type: 'ai' }); setTimeout(() => { const i = document.getElementById('aiInput'); if (i) i.focus(); }, 50); },
+  aiSend() { const i = document.getElementById('aiInput'); const t = i ? i.value : ''; if (i) i.value = ''; return aiSend(t); },
+  aiAsk(b) { return aiSend(b.dataset.q); },
+  aiNew() { S.ai = { threadId: null, token: null, msgs: [] }; aiSave(); renderSheet(); },
+  openTicketForm() { openSheet({ type: 'ticketForm' }); },
+  async sendTicket(b) {
+    const v = (id) => ((document.getElementById(id) || {}).value || '').trim();
+    if (!v('tk_details')) { toast('اكتب تفاصيل البلاغ'); return; }
+    b.disabled = true;
+    const r = await call('POST', '/api/tickets', { category: v('tk_cat'), subject: v('tk_subject'), details: v('tk_details'), orderCode: v('tk_order'), name: v('tk_name'), phone: v('tk_phone') });
+    if (v('tk_phone')) { lss('hd.trialPhone', v('tk_phone')); lss('hd.trialName', v('tk_name')); }
+    closeSheet(); toast(`✅ وصل بلاغك للإدارة برقم #${r.number}`);
+  },
+  tkFilter(b) { S.ticketFilter = b.dataset.v; render(); },
+  async tkSet(b) {
+    const id = b.dataset.id; const note = (document.getElementById('tn_' + id) || {}).value;
+    b.disabled = true;
+    await call('PATCH', '/api/admin/tickets/' + id, { ...(b.dataset.v ? { status: b.dataset.v } : {}), adminNote: note });
+    toast(b.dataset.v === 'closed' ? 'تم إقفال البلاغ' : b.dataset.v === 'open' ? 'تم إعادة فتح البلاغ' : 'تم حفظ الملاحظة');
+    await Promise.all([loadTickets(), loadRole()]); render();
+  },
+  async tkTranscript(b) { S.transcript = null; openSheet({ type: 'transcript' }); S.transcript = await call('GET', `/api/admin/tickets/${b.dataset.id}/transcript`); renderSheet(); },
   legalTab(b) { S.legal = b.dataset.v; history.replaceState({ legal: S.legal }, '', '/legal/' + S.legal); render(); },
   closeLegal() { S.legal = null; history.replaceState(null, '', pathFor(S.role, S.view)); render(); },
   switchRole() { closeSheet(); S.role = 'customer'; S.view = { name: 'home' }; syncUrl(); syncTracking(); startRole(); },
@@ -1613,6 +1734,7 @@ async function uploadReceipt(file) {
 }
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && S.sheet) { if (S.sheet.type === 'confirm') ACT.confirmNo(); else closeSheet(); }
+  if (e.key === 'Enter' && e.target.id === 'aiInput') { e.preventDefault(); ACT.aiSend(); return; }
   if (e.key === 'Enter' && e.target.id === 'chatInput') { const b = document.querySelector('[data-act="sendChat"]'); if (b) b.click(); }
 });
 window.addEventListener('online', () => { document.querySelector('.offline')?.remove(); refreshSoon('all'); });

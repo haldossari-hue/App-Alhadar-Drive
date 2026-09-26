@@ -120,3 +120,6 @@ export function withDisplayNames(stores) {
     return { ...s, name: `${(CAT[s.category] || { name: 'متجر' }).name} — متجر ${n[s.category]}`, unnamed: true };
   });
 }
+
+/* توحيد النص العربي للبحث: يتجاهل الهمزات والتاء المربوطة والتشكيل */
+export const normAr = (t) => String(t || '').toLowerCase().replace(/[ً-ٟـ]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/ؤ/g, 'و').replace(/ئ/g, 'ي').replace(/\s+/g, ' ').trim();

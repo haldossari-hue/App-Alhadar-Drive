@@ -24,6 +24,6 @@ export default defineConfig({
     command: 'node --disable-warning=ExperimentalWarning src/server.js',
     url: `http://localhost:${PORT}/api/health`,
     reuseExistingServer: false,
-    env: { PORT: String(PORT), DATA_DIR: dataDir, PAYMENT_PROVIDER: 'fake', PUBLIC_URL: `http://localhost:${PORT}`, INITIAL_ADMIN_PIN: '1234' },
+    env: { ASSISTANT_FAKE: '1', PORT: String(PORT), DATA_DIR: dataDir, PAYMENT_PROVIDER: 'fake', PUBLIC_URL: `http://localhost:${PORT}`, INITIAL_ADMIN_PIN: '1234' },
   },
 });

@@ -136,6 +136,30 @@ CREATE TABLE IF NOT EXISTS payments (
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS payments_group ON payments(group_code);
+CREATE TABLE IF NOT EXISTS tickets (
+  id TEXT PRIMARY KEY,
+  number TEXT NOT NULL UNIQUE,      -- رقم البلاغ للعميل مثل 4821
+  category TEXT NOT NULL,           -- complaint | report | suggestion | inquiry | other
+  subject TEXT NOT NULL,
+  details TEXT NOT NULL,
+  order_code TEXT,
+  name TEXT, phone TEXT,
+  customer_phone TEXT,              -- لو العميل مسجّل
+  status TEXT NOT NULL DEFAULT 'open',  -- open | closed
+  admin_note TEXT,
+  source TEXT NOT NULL,             -- assistant | form
+  thread_id TEXT,
+  created_at INTEGER NOT NULL, closed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS tickets_status ON tickets(status, created_at);
+CREATE TABLE IF NOT EXISTS assistant_threads (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL,         -- سر المحادثة (يمنع أي أحد ثاني يقرأها)
+  customer_phone TEXT,
+  messages TEXT NOT NULL,           -- سجل رسائل الـ API كامل (append-only)
+  user_turns INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
 `;
 
 export function openDb(file) {

@@ -377,3 +377,17 @@ input[type=time]{width:100%;padding:11px 13px;border-radius:12px;border:1px soli
 .otprow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px dashed var(--line)}
 
 .trialbar{background:var(--palm-soft);color:var(--ink);border-inline-start:4px solid var(--palm)}
+
+/* ===== المساعد الذكي ===== */
+.aibtn{position:fixed;left:16px;bottom:calc(78px + env(safe-area-inset-bottom,0px));z-index:17;display:flex;align-items:center;gap:6px;border:0;border-radius:999px;padding:10px 16px 10px 14px;background:var(--clay);color:#FFF8EE;font-weight:600;font-size:14px;box-shadow:0 6px 20px rgba(122,61,25,.35)}
+.aibtn.raised{bottom:calc(142px + env(safe-area-inset-bottom,0px))}
+.aibtn span{font-size:13.5px}
+.ailist{min-height:180px}
+.aiwelcome{background:var(--sun-soft);border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.8}
+.aisug{flex-wrap:wrap;overflow:visible}
+.tkcard{margin-top:8px;padding:8px 10px;border-radius:10px;background:var(--palm-soft);color:var(--ink);font-size:13px}
+.typing{display:flex;gap:4px;align-items:center;min-height:22px}
+.typing span{width:7px;height:7px;border-radius:50%;background:var(--muted);animation:blink 1.2s infinite ease-in-out}
+.typing span:nth-child(2){animation-delay:.2s}.typing span:nth-child(3){animation-delay:.4s}
+@keyframes blink{0%,80%,100%{opacity:.25}40%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.typing span{animation:none}}
